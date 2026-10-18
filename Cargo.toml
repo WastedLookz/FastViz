@@ -15,6 +15,11 @@ adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
 async-channel = "2.5.0"
+libheif-rs = { version = "3.0.0", default-features = false, features = ["v1_17"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "gif", "webp", "bmp", "tiff", "jpeg"] }
+kamadak-exif = "0.6.1"
+imagesize = "0.15.0"
 
 [profile.release]
 lto = "thin"

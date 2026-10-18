@@ -1,5 +1,6 @@
 //! Virtualized thumbnail grid. Each tile is a square thumbnail area with the
-//! filename underneath and a play badge on videos.
+//! filename underneath and a play badge on videos. Tiles tell the
+//! thumbnailer what they show; textures are drawn GPU-scaled to the tile.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -8,6 +9,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene, gsk};
 
+use crate::loader::Thumbnailer;
 use crate::media::Kind;
 use crate::model::FileItem;
 
@@ -24,11 +26,16 @@ pub struct Grid {
     tiles: Rc<RefCell<Vec<glib::WeakRef<Tile>>>>,
     size: Rc<Cell<i32>>,
     width: Rc<Cell<f64>>,
+    thumbnailer: Rc<Thumbnailer>,
 }
 
 impl Grid {
     /// `size` drives the thumbnail edge length; Ctrl+wheel over the grid changes it.
-    pub fn new(model: &impl IsA<gtk::SelectionModel>, size: &gtk::Adjustment) -> Self {
+    pub fn new(
+        model: &impl IsA<gtk::SelectionModel>,
+        size: &gtk::Adjustment,
+        thumbnailer: &Rc<Thumbnailer>,
+    ) -> Self {
         let current = Rc::new(Cell::new(size.value().round() as i32));
         let tiles: Rc<RefCell<Vec<glib::WeakRef<Tile>>>> = Rc::default();
 
@@ -38,26 +45,57 @@ impl Grid {
             current,
             #[strong]
             tiles,
+            #[weak]
+            thumbnailer,
             move |_, item| {
                 let item = item
                     .downcast_ref::<gtk::ListItem>()
                     .expect("grid list item");
                 let tile = Tile::new(current.get());
                 tiles.borrow_mut().push(tile.downgrade());
+                // Positions are only known once GTK maps a tile on screen.
+                tile.connect_map(glib::clone!(
+                    #[weak]
+                    thumbnailer,
+                    move |_| thumbnailer.queue_sync()
+                ));
+                let thumb = tile.thumb();
+                for property in ["texture", "native", "failed"] {
+                    item.property_expression("item")
+                        .chain_property::<FileItem>(property)
+                        .bind(&thumb, property, Some(item));
+                }
                 item.set_child(Some(&tile));
             }
         ));
-        factory.connect_bind(|_, item| {
-            let item = item
-                .downcast_ref::<gtk::ListItem>()
-                .expect("grid list item");
-            if let (Some(tile), Some(file)) = (
-                item.child().and_downcast::<Tile>(),
-                item.item().and_downcast::<FileItem>(),
-            ) {
-                tile.bind(&file);
+        factory.connect_bind(glib::clone!(
+            #[weak]
+            thumbnailer,
+            move |_, item| {
+                let item = item
+                    .downcast_ref::<gtk::ListItem>()
+                    .expect("grid list item");
+                if let (Some(tile), Some(file)) = (
+                    item.child().and_downcast::<Tile>(),
+                    item.item().and_downcast::<FileItem>(),
+                ) {
+                    tile.bind(&file);
+                    thumbnailer.bind(&tile, item, &file);
+                }
             }
-        });
+        ));
+        factory.connect_unbind(glib::clone!(
+            #[weak]
+            thumbnailer,
+            move |_, item| {
+                let item = item
+                    .downcast_ref::<gtk::ListItem>()
+                    .expect("grid list item");
+                if let Some(file) = item.item().and_downcast::<FileItem>() {
+                    thumbnailer.unbind(&file);
+                }
+            }
+        ));
 
         let view = gtk::GridView::builder()
             .model(model)
@@ -96,6 +134,13 @@ impl Grid {
             }
         ));
         scroller.add_controller(zoom);
+        thumbnailer.set_viewport(&scroller);
+        thumbnailer.set_size(current.get());
+        scroller.vadjustment().connect_value_changed(glib::clone!(
+            #[weak]
+            thumbnailer,
+            move |adj| thumbnailer.scrolled(adj.value())
+        ));
 
         // GTK pre-creates tile widgets for max_columns x ~30 rows, so a generous
         // fixed max_columns builds a widget for every item and defeats
@@ -124,6 +169,7 @@ impl Grid {
             tiles,
             size: current,
             width,
+            thumbnailer: thumbnailer.clone(),
         }
     }
 
@@ -133,6 +179,8 @@ impl Grid {
             return;
         }
         fit_columns(&self.view, self.width.get(), size);
+        self.thumbnailer.set_size(size);
+        self.thumbnailer.queue_sync();
         self.tiles.borrow_mut().retain(|weak| match weak.upgrade() {
             Some(tile) => {
                 tile.set_size(size);
@@ -227,9 +275,11 @@ impl Tile {
     }
 
     fn set_size(&self, size: i32) {
-        if let Some(thumb) = self.imp().thumb.get() {
-            thumb.set_size(size);
-        }
+        self.thumb().set_size(size);
+    }
+
+    fn thumb(&self) -> Thumb {
+        self.imp().thumb.get().expect("tile thumb").clone()
     }
 
     fn bind(&self, file: &FileItem) {
@@ -247,9 +297,17 @@ impl Tile {
 mod thumb_imp {
     use super::*;
 
-    #[derive(Default)]
+    #[derive(Default, glib::Properties)]
+    #[properties(wrapper_type = super::Thumb)]
     pub struct Thumb {
         pub size: Cell<i32>,
+        #[property(get, set, nullable)]
+        texture: RefCell<Option<gdk::Texture>>,
+        /// Draw at 100% at most: the texture is the whole (small) image.
+        #[property(get, set)]
+        native: Cell<bool>,
+        #[property(get, set)]
+        failed: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -259,7 +317,14 @@ mod thumb_imp {
         type ParentType = gtk::Widget;
     }
 
-    impl ObjectImpl for Thumb {}
+    #[glib::derived_properties]
+    impl ObjectImpl for Thumb {
+        fn constructed(&self) {
+            self.parent_constructed();
+            self.obj()
+                .connect_notify_local(None, |thumb, _| thumb.queue_draw());
+        }
+    }
 
     impl WidgetImpl for Thumb {
         fn measure(&self, _orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
@@ -268,16 +333,58 @@ mod thumb_imp {
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
-            // Neutral placeholder until the thumbnail pipeline supplies a texture.
             let widget = self.obj();
-            let bounds =
-                graphene::Rect::new(0.0, 0.0, widget.width() as f32, widget.height() as f32);
+            let (width, height) = (widget.width() as f32, widget.height() as f32);
+
+            if let Some(texture) = self.texture.borrow().as_ref() {
+                let (tw, th) = (texture.width() as f32, texture.height() as f32);
+                let mut scale = (width / tw).min(height / th);
+                if self.native.get() {
+                    scale = scale.min(1.0 / widget.scale_factor() as f32);
+                }
+                let (w, h) = (tw * scale, th * scale);
+                let rect = graphene::Rect::new((width - w) / 2.0, (height - h) / 2.0, w, h);
+                snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(rect, 3.0));
+                // Trilinear uses mipmaps, so any downscale stays smooth.
+                snapshot.append_scaled_texture(texture, gsk::ScalingFilter::Trilinear, &rect);
+                snapshot.pop();
+                return;
+            }
+
+            // Neutral placeholder while loading, and for videos (until Stage 5).
+            let bounds = graphene::Rect::new(0.0, 0.0, width, height);
+            let failed = self.failed.get();
             let mut color = widget.color();
-            color.set_alpha(0.06);
+            color.set_alpha(if failed { 0.03 } else { 0.06 });
             snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(bounds, 6.0));
             snapshot.append_color(&color, &bounds);
             snapshot.pop();
+            if failed {
+                draw_missing_icon(&widget, snapshot, width, height);
+            }
         }
+    }
+
+    /// A dim "broken image" icon for files that can't be decoded.
+    fn draw_missing_icon(widget: &super::Thumb, snapshot: &gtk::Snapshot, width: f32, height: f32) {
+        let size = (width.min(height) * 0.3).clamp(16.0, 48.0);
+        let icon = gtk::IconTheme::for_display(&widget.display()).lookup_icon(
+            "image-missing-symbolic",
+            &[],
+            size as i32,
+            widget.scale_factor(),
+            widget.direction(),
+            gtk::IconLookupFlags::empty(),
+        );
+        let mut color = widget.color();
+        color.set_alpha(0.35);
+        snapshot.save();
+        snapshot.translate(&graphene::Point::new(
+            (width - size) / 2.0,
+            (height - size) / 2.0,
+        ));
+        icon.snapshot_symbolic(snapshot, size.into(), size.into(), &[color]);
+        snapshot.restore();
     }
 }
 

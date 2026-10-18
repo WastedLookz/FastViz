@@ -64,3 +64,60 @@ pub fn snapshot_on_request(window: &gtk::Window, delay_ms: u64) {
         }
     });
 }
+
+/// Developer aid: with `PHOTOVIEWER_AUTOSCROLL=<px per frame>`, scrolls the
+/// grid continuously (bouncing at the ends) and traces frame times and memory
+/// once a second, to check scrolling stays smooth and memory bounded.
+pub fn autoscroll_on_request(scroller: &gtk::ScrolledWindow) {
+    use gtk::prelude::*;
+    use std::cell::{Cell, RefCell};
+
+    let Some(step) = std::env::var("PHOTOVIEWER_AUTOSCROLL")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+    else {
+        return;
+    };
+    let direction = Cell::new(1.0);
+    let last_frame = Cell::new(None::<i64>);
+    let intervals = RefCell::new(Vec::<f64>::new());
+    let report_at = Cell::new(0i64);
+    scroller.add_tick_callback(move |scroller, clock| {
+        let adj = scroller.vadjustment();
+        let max = adj.upper() - adj.page_size();
+        let next = adj.value() + step * direction.get();
+        if next >= max || next <= 0.0 {
+            direction.set(-direction.get());
+        }
+        adj.set_value(next.clamp(0.0, max.max(0.0)));
+
+        let now = clock.frame_time();
+        if let Some(previous) = last_frame.replace(Some(now)) {
+            intervals.borrow_mut().push((now - previous) as f64 / 1e3);
+        }
+        if now >= report_at.get() {
+            report_at.set(now + 1_000_000);
+            let mut frames = intervals.take();
+            if !frames.is_empty() {
+                frames.sort_by(f64::total_cmp);
+                let slow = frames.iter().filter(|&&ms| ms > 20.0).count();
+                emit(format_args!(
+                    "scroll: {} frames, median {:.1} ms, worst {:.1} ms, {} over 20 ms | RSS {} MiB",
+                    frames.len(),
+                    frames[frames.len() / 2],
+                    frames[frames.len() - 1],
+                    slow,
+                    rss_mib()
+                ));
+            }
+        }
+        gtk::glib::ControlFlow::Continue
+    });
+}
+
+fn rss_mib() -> u64 {
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map_or(0, |pages| (pages * 4096) >> 20)
+}

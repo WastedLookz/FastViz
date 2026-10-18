@@ -3,12 +3,15 @@
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
+use gtk::{gdk, glib};
 use serde::{Deserialize, Serialize};
 
+use crate::cache::Key;
+use crate::media::Meta;
 use crate::natsort;
 use crate::scan::Entry;
 
@@ -18,18 +21,29 @@ pub enum SortKey {
     Name,
     #[default]
     Modified,
+    Taken,
     Format,
+    Dimensions,
     Size,
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 4] = [Self::Name, Self::Modified, Self::Format, Self::Size];
+    pub const ALL: [SortKey; 6] = [
+        Self::Name,
+        Self::Modified,
+        Self::Taken,
+        Self::Format,
+        Self::Dimensions,
+        Self::Size,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::Name => "name",
             Self::Modified => "modified",
+            Self::Taken => "taken",
             Self::Format => "format",
+            Self::Dimensions => "dimensions",
             Self::Size => "size",
         }
     }
@@ -42,23 +56,33 @@ impl SortKey {
         match self {
             Self::Name => "Name",
             Self::Modified => "Date Modified",
+            Self::Taken => "Date Taken",
             Self::Format => "Format",
+            Self::Dimensions => "Dimensions",
             Self::Size => "Size",
         }
+    }
+
+    /// Whether sorting needs metadata read from file contents.
+    pub fn needs_meta(self) -> bool {
+        matches!(self, Self::Taken | Self::Dimensions)
     }
 }
 
 /// Orders by `key`, then by natural name order so equal keys stay stable.
-pub fn compare(a: &Entry, b: &Entry, key: SortKey) -> Ordering {
+pub fn compare(a: &FileItem, b: &FileItem, key: SortKey) -> Ordering {
+    let (ea, eb) = (a.entry(), b.entry());
     let primary = match key {
         SortKey::Name => Ordering::Equal,
-        SortKey::Modified => a.mtime.cmp(&b.mtime),
-        SortKey::Format => a.format.cmp(b.format),
-        SortKey::Size => a.size.cmp(&b.size),
+        SortKey::Modified => ea.mtime.cmp(&eb.mtime),
+        SortKey::Taken => a.date_taken().cmp(&b.date_taken()),
+        SortKey::Format => a.format().cmp(b.format()),
+        SortKey::Dimensions => a.pixel_count().cmp(&b.pixel_count()),
+        SortKey::Size => ea.size.cmp(&eb.size),
     };
     primary
-        .then_with(|| natsort::compare(&a.key, &b.key))
-        .then_with(|| a.name.cmp(&b.name))
+        .then_with(|| natsort::compare(&ea.key, &eb.key))
+        .then_with(|| ea.name.cmp(&eb.name))
 }
 
 /// A sorter reading the shared (key, descending) state; call `changed` after updating it.
@@ -69,19 +93,32 @@ pub fn sorter(state: Rc<Cell<(SortKey, bool)>>) -> gtk::CustomSorter {
         else {
             return gtk::Ordering::Equal;
         };
-        let ord = compare(a.entry(), b.entry(), key);
+        let ord = compare(a, b, key);
         if descending { ord.reverse() } else { ord }.into()
     })
 }
 
 mod imp {
-    use std::cell::OnceCell;
+    use std::cell::{OnceCell, RefCell};
 
     use super::*;
 
-    #[derive(Default)]
+    #[derive(Default, glib::Properties)]
+    #[properties(wrapper_type = super::FileItem)]
     pub struct FileItem {
+        /// The thumbnail, once loaded (and while it stays in the texture budget).
+        #[property(get, nullable)]
+        texture: RefCell<Option<gdk::Texture>>,
+        /// The texture is the whole image at 100%, so it must not be upscaled.
+        #[property(get)]
+        native: Cell<bool>,
+        /// The file couldn't be decoded.
+        #[property(get, set)]
+        pub failed: Cell<bool>,
+        pub texture_tier: Cell<u32>,
+        pub meta: Cell<Option<Meta>>,
         pub entry: OnceCell<Entry>,
+        pub id: Cell<u64>,
     }
 
     #[glib::object_subclass]
@@ -90,18 +127,41 @@ mod imp {
         type Type = super::FileItem;
     }
 
+    #[glib::derived_properties]
     impl ObjectImpl for FileItem {}
+
+    impl FileItem {
+        pub fn set_thumbnail(&self, texture: Option<gdk::Texture>, tier: u32, native: bool) {
+            self.texture_tier.set(tier);
+            self.native.set(native);
+            self.texture.replace(texture);
+            let obj = self.obj();
+            obj.notify_native();
+            obj.notify_texture();
+        }
+    }
 }
 
 glib::wrapper! {
     pub struct FileItem(ObjectSubclass<imp::FileItem>);
 }
 
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
 impl FileItem {
-    pub fn new(entry: Entry) -> Self {
+    pub fn new(mut entry: Entry) -> Self {
         let item: Self = glib::Object::new();
-        let _ = item.imp().entry.set(entry);
+        let imp = item.imp();
+        imp.id.set(NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed));
+        imp.meta.set(entry.meta.take());
+        imp.failed.set(entry.failed);
+        let _ = imp.entry.set(entry);
         item
+    }
+
+    /// Unique for the life of the process.
+    pub fn id(&self) -> u64 {
+        self.imp().id.get()
     }
 
     pub fn entry(&self) -> &Entry {
@@ -109,5 +169,48 @@ impl FileItem {
             .entry
             .get()
             .expect("FileItem created without an entry")
+    }
+
+    pub fn key(&self) -> Key {
+        let entry = self.entry();
+        Key {
+            path: entry.path.clone(),
+            mtime: entry.mtime,
+            size: entry.size,
+        }
+    }
+
+    pub fn meta(&self) -> Option<Meta> {
+        self.imp().meta.get()
+    }
+
+    pub fn set_meta(&self, meta: Meta) {
+        self.imp().meta.set(Some(meta));
+    }
+
+    pub fn texture_tier(&self) -> u32 {
+        self.imp().texture_tier.get()
+    }
+
+    pub fn set_thumbnail(&self, texture: Option<gdk::Texture>, tier: u32, native: bool) {
+        self.imp().set_thumbnail(texture, tier, native);
+    }
+
+    /// The format from the file's contents once known, else from its extension.
+    pub fn format(&self) -> &'static str {
+        self.meta().map_or(self.entry().format, |m| m.format)
+    }
+
+    /// EXIF date taken, falling back to the modification time.
+    pub fn date_taken(&self) -> i64 {
+        self.meta()
+            .and_then(|m| m.taken)
+            .unwrap_or(self.entry().mtime)
+    }
+
+    /// Width x height, or 0 while unknown.
+    pub fn pixel_count(&self) -> u64 {
+        self.meta()
+            .map_or(0, |m| u64::from(m.width) * u64::from(m.height))
     }
 }

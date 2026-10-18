@@ -2,16 +2,21 @@
 //!
 //! One `getdents` pass reads names and types (d_type), files are filtered by
 //! extension before anything else, and only media files get one `statx` each,
-//! relative to the open directory. Results stream to the UI in batches.
+//! relative to the open directory. Files without an extension are sniffed.
+//! Metadata already in the cache is attached up front, so a warm folder can
+//! sort by date taken or dimensions from the first batch.
 
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::media::{self, Kind};
+use crate::cache;
+use crate::decode;
+use crate::media::{self, Kind, Meta};
 
 pub struct Entry {
     pub path: PathBuf,
@@ -22,7 +27,12 @@ pub struct Entry {
     /// Modification time, seconds since the epoch.
     pub mtime: i64,
     pub kind: Kind,
+    /// From the extension (or sniffed, for files without one).
     pub format: &'static str,
+    /// Cached metadata, if this version of the file was seen before.
+    pub meta: Option<Meta>,
+    /// The current decoder already failed on this version of the file.
+    pub failed: bool,
 }
 
 pub enum ScanMsg {
@@ -69,12 +79,15 @@ pub fn start(dir: PathBuf, show_hidden: bool) -> Scan {
 }
 
 fn run(
-    dir: &std::path::Path,
+    dir: &Path,
     show_hidden: bool,
     cancel: &AtomicBool,
     tx: &async_channel::Sender<ScanMsg>,
 ) -> Result<(), String> {
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    let known = cache::open()
+        .and_then(|conn| cache::folder(&conn, dir))
+        .unwrap_or_default();
     let mut batch = Vec::with_capacity(FIRST_BATCH);
     let mut limit = FIRST_BATCH;
     let mut last_flush = Instant::now();
@@ -89,9 +102,10 @@ fn run(
         if !show_hidden && is_hidden(&name) {
             continue;
         }
-        let Some((kind, format)) = media::classify(&name) else {
+        let classified = media::classify(&name);
+        if classified.is_none() && name.contains('.') {
             continue;
-        };
+        }
         let Ok(file_type) = dirent.file_type() else {
             continue;
         };
@@ -106,16 +120,28 @@ fn run(
         if !metadata.is_file() {
             continue;
         }
+        let path = dirent.path();
+        let Some((kind, format)) = classified.or_else(|| sniff_file(&path)) else {
+            continue;
+        };
 
+        let (size, mtime) = (metadata.len(), metadata.mtime());
+        let known = known
+            .get(&path)
+            .filter(|(m, s, _)| (*m, *s) == (mtime, size))
+            .map(|(_, _, known)| *known)
+            .unwrap_or_default();
         let name = name.into_owned();
         batch.push(Entry {
-            path: dirent.path(),
+            path,
             key: name.to_lowercase(),
             name,
-            size: metadata.len(),
-            mtime: metadata.mtime(),
+            size,
+            mtime,
             kind,
             format,
+            meta: known.meta,
+            failed: known.failed,
         });
 
         if batch.len() >= limit || last_flush.elapsed() >= FLUSH_INTERVAL {
@@ -131,6 +157,13 @@ fn run(
         let _ = tx.send_blocking(ScanMsg::Batch(batch));
     }
     Ok(())
+}
+
+/// Recognizes images saved without an extension from their first bytes.
+fn sniff_file(path: &Path) -> Option<(Kind, &'static str)> {
+    let mut head = [0u8; 64];
+    let len = fs::File::open(path).ok()?.read(&mut head).ok()?;
+    decode::sniff(&head[..len]).map(|format| (Kind::Image, format))
 }
 
 /// Dot-files, plus the Windows system folders every NTFS drive carries.

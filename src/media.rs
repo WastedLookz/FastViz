@@ -6,6 +6,32 @@ pub enum Kind {
     Video,
 }
 
+/// Facts about an image that need its contents, filled in lazily.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Meta {
+    /// Pixel size as displayed (after EXIF/HEIF rotation).
+    pub width: u32,
+    pub height: u32,
+    /// EXIF DateTimeOriginal as Unix time.
+    pub taken: Option<i64>,
+    /// Format detected from the content, which can differ from the extension.
+    pub format: &'static str,
+}
+
+/// Every format label we produce, for mapping stored text back to `&'static str`.
+const FORMATS: &[&str] = &[
+    "JPEG", "PNG", "WebP", "GIF", "BMP", "TIFF", "HEIF", "AVIF", "JPEG XL", "MP4", "M4V", "MOV",
+    "3GP", "3G2", "MKV", "WebM", "AVI", "WMV", "FLV", "MPEG", "MPEG-TS", "Ogg", "MXF", "DV",
+];
+
+pub fn format_label(name: &str) -> &'static str {
+    FORMATS
+        .iter()
+        .copied()
+        .find(|f| *f == name)
+        .unwrap_or("Unknown")
+}
+
 /// Classifies a file name by its extension, returning its kind and a short format label.
 /// Content sniffing for files with missing or wrong extensions comes with the metadata pass.
 pub fn classify(name: &str) -> Option<(Kind, &'static str)> {

@@ -1,14 +1,19 @@
 //! FastViz: a fast, minimal photo and video browser.
 
+mod cache;
+mod decode;
 mod grid;
+mod loader;
 mod media;
 mod model;
 mod natsort;
 mod prefs;
 mod scan;
 mod settings;
+mod storage;
 mod trace;
 mod tree;
+mod turbojpeg;
 mod window;
 
 use adw::prelude::*;

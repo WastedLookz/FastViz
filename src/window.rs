@@ -10,10 +10,12 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use crate::grid::{self, Grid};
+use crate::loader::Thumbnailer;
 use crate::model::{self, FileItem, SortKey};
 use crate::prefs::{self, Startup};
 use crate::scan::{self, ScanMsg};
 use crate::settings::Settings;
+use crate::storage;
 use crate::trace;
 use crate::tree::FolderTree;
 
@@ -22,6 +24,7 @@ pub struct Window {
     paned: gtk::Paned,
     tree: Rc<FolderTree>,
     grid: Grid,
+    thumbnailer: Rc<Thumbnailer>,
     stack: gtk::Stack,
     empty: adw::StatusPage,
     store: gio::ListStore,
@@ -44,6 +47,8 @@ pub struct Window {
     scanning: Cell<bool>,
     /// True until the first folder finishes loading (falls back to Home if it fails).
     startup: Cell<bool>,
+    /// A live re-sort is scheduled (metadata arriving while sorting by it).
+    resort_queued: Cell<bool>,
 }
 
 impl Window {
@@ -65,7 +70,8 @@ impl Window {
             16.0,
             0.0,
         );
-        let grid = Grid::new(&selection, &size);
+        let thumbnailer = Thumbnailer::new();
+        let grid = Grid::new(&selection, &size, &thumbnailer);
 
         let empty = adw::StatusPage::builder()
             .icon_name("folder-pictures-symbolic")
@@ -167,6 +173,7 @@ impl Window {
             paned,
             tree,
             grid,
+            thumbnailer,
             stack,
             empty,
             store,
@@ -190,6 +197,7 @@ impl Window {
             totals: Cell::new((0, 0)),
             scanning: Cell::new(false),
             startup: Cell::new(true),
+            resort_queued: Cell::new(false),
         });
         this.setup_actions(&settings);
         this.connect_signals();
@@ -228,6 +236,7 @@ impl Window {
         self.window.present();
         self.grid.view.grab_focus();
         trace::snapshot_on_request(self.window.upcast_ref(), 1500);
+        trace::autoscroll_on_request(&self.grid.scroller);
     }
 
     fn setup_actions(self: &Rc<Self>, settings: &Settings) {
@@ -316,6 +325,12 @@ impl Window {
     }
 
     fn connect_signals(self: &Rc<Self>) {
+        self.thumbnailer.connect_meta(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |item| this.meta_arrived(item)
+        ));
+
         self.tree.connect_selected(glib::clone!(
             #[weak(rename_to = this)]
             self,
@@ -358,6 +373,9 @@ impl Window {
             task.abort();
         }
         self.store.remove_all();
+        let rotational = storage::is_rotational(&path);
+        trace!("storage: rotational = {rotational:?}");
+        self.thumbnailer.reset(rotational);
         self.totals.set((0, 0));
         self.scanning.set(true);
         self.update_count_status();
@@ -427,12 +445,53 @@ impl Window {
         self.totals
             .set((count + entries.len() as u32, bytes + added));
         let items: Vec<FileItem> = entries.into_iter().map(FileItem::new).collect();
-        self.store.extend_from_slice(&items);
+        self.thumbnailer.register(&items);
+        if self.sort.get().0.needs_meta() {
+            self.thumbnailer.want_metadata(&items);
+        }
+        self.keeping_top(|| self.store.extend_from_slice(&items));
         self.update_count_status();
+    }
+
+    /// Runs `change` to the model; if the grid was scrolled to the top it
+    /// stays there. Otherwise GTK keeps its anchor item in view, so items
+    /// sorting in above it would drag the view down the folder.
+    fn keeping_top(&self, change: impl FnOnce()) {
+        let at_top = self.grid.scroller.vadjustment().value() < 1.0;
+        change();
+        if at_top && self.selection.n_items() > 0 {
+            self.grid
+                .view
+                .scroll_to(0, gtk::ListScrollFlags::NONE, None);
+        }
+    }
+
+    fn meta_arrived(self: &Rc<Self>, item: &FileItem) {
+        if self.sort.get().0.needs_meta() && !self.resort_queued.replace(true) {
+            // Re-sort live as metadata streams in, at most a few times a second.
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(300),
+                glib::clone!(
+                    #[weak(rename_to = this)]
+                    self,
+                    move || {
+                        this.resort_queued.set(false);
+                        this.keeping_top(|| this.sorter.changed(gtk::SorterChange::Different));
+                    }
+                ),
+            );
+        }
+        let selected = self.selection.selection();
+        if selected.size() == 1
+            && self.selection.item(selected.nth(0)).as_ref() == Some(item.upcast_ref())
+        {
+            self.update_selection_status();
+        }
     }
 
     fn scan_done(self: &Rc<Self>, result: Result<(), String>) {
         self.scan_task.take();
+        self.thumbnailer.scan_finished();
         self.scanning.set(false);
         self.update_count_status();
         let startup = self.startup.replace(false);
@@ -458,6 +517,12 @@ impl Window {
 
     fn set_sort(&self, key: SortKey, descending: bool) {
         self.sort.set((key, descending));
+        if key.needs_meta() {
+            let items: Vec<FileItem> = self.store.iter::<FileItem>().flatten().collect();
+            self.thumbnailer.want_metadata(&items);
+        } else {
+            self.thumbnailer.cancel_metadata();
+        }
         let started = Instant::now();
         self.sorter.changed(gtk::SorterChange::Different);
         trace!(
@@ -552,7 +617,7 @@ impl Window {
                 .selection
                 .item(selected.nth(0))
                 .and_downcast::<FileItem>()
-                .map(|item| describe(item.entry()))
+                .map(|item| describe(&item, self.sort.get().0 == SortKey::Taken))
                 .unwrap_or_default(),
             n => {
                 let mut bytes = 0;
@@ -654,19 +719,25 @@ fn main_menu() -> gio::Menu {
     menu
 }
 
-/// Status-bar summary of one item: name, date, format and size.
-fn describe(entry: &scan::Entry) -> String {
-    let date = glib::DateTime::from_unix_local(entry.mtime)
+/// Status-bar summary of one item: name, date, format, dimensions and size.
+/// The date is when it was taken if sorting by that, else when modified.
+fn describe(item: &FileItem, taken: bool) -> String {
+    let entry = item.entry();
+    let meta = item.meta();
+    let time = match meta.and_then(|m| m.taken) {
+        Some(taken_at) if taken => taken_at,
+        _ => entry.mtime,
+    };
+    let date = glib::DateTime::from_unix_local(time)
         .and_then(|d| d.format("%Y-%m-%d %H:%M"))
         .map(|s| s.to_string())
         .unwrap_or_default();
-    format!(
-        "{}    {}    {}    {}",
-        entry.name,
-        date,
-        entry.format,
-        glib::format_size(entry.size)
-    )
+    let mut parts = vec![entry.name.clone(), date, item.format().to_owned()];
+    if let Some(meta) = meta {
+        parts.push(format!("{} × {}", meta.width, meta.height));
+    }
+    parts.push(glib::format_size(entry.size).to_string());
+    parts.join("    ")
 }
 
 fn display_name(path: &Path) -> String {
