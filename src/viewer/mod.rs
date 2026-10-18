@@ -1,10 +1,12 @@
 //! Fullscreen viewer: one photo or video at a time, shrink-to-fit, GPU zoom
 //! and pan, and the neighbors preloaded (decoded and uploaded) so moving
 //! between items is instant. Until an item decodes, its grid thumbnail
-//! stands in, stretched to the same place.
+//! stands in, stretched to the same place. Videos play with mpv over the
+//! canvas, which shows their first frame until playback starts.
 
 mod canvas;
 mod load;
+mod playback;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -20,6 +22,7 @@ use crate::model::FileItem;
 use crate::trace;
 use canvas::Canvas;
 use load::{Loaded, Pool, Request};
+use playback::Playback;
 
 /// Zoom factor per wheel notch.
 const ZOOM_STEP: f64 = 1.25;
@@ -47,6 +50,7 @@ pub struct Viewer {
     canvas: Canvas,
     info: gtk::Label,
     note: gtk::Label,
+    playback: Rc<Playback>,
     pool: Pool,
     model: RefCell<Option<gtk::SelectionModel>>,
     current: RefCell<Option<FileItem>>,
@@ -71,9 +75,10 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    pub fn new(black: bool) -> Rc<Self> {
+    pub fn new(black: bool, volume: f64) -> Rc<Self> {
         let canvas = Canvas::default();
         canvas.set_black(black);
+        let playback = Playback::new(volume, black);
         let info = gtk::Label::builder()
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Start)
@@ -94,8 +99,10 @@ impl Viewer {
             .child(&canvas)
             .focusable(true)
             .build();
+        widget.add_overlay(&playback.area);
         widget.add_overlay(&info);
         widget.add_overlay(&note);
+        widget.add_overlay(&playback.controls);
 
         let viewer = Rc::new_cyclic(|me| Self {
             me: me.clone(),
@@ -103,6 +110,7 @@ impl Viewer {
             canvas,
             info,
             note,
+            playback,
             pool: Pool::new(2),
             model: RefCell::default(),
             current: RefCell::default(),
@@ -121,6 +129,15 @@ impl Viewer {
             on_background: RefCell::default(),
         });
         viewer.connect_input();
+        // A video showing its first frame (or failing) frees the drive for
+        // preloading its neighbors.
+        let weak = Rc::downgrade(&viewer);
+        viewer.playback.connect_ready(move || {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.update_overlays();
+                viewer.request();
+            }
+        });
 
         let weak = Rc::downgrade(&viewer);
         let results = viewer.pool.results.clone();
@@ -150,8 +167,14 @@ impl Viewer {
         self.on_background.replace(Some(Box::new(f)));
     }
 
+    /// Called when the video volume changes.
+    pub fn connect_volume(&self, f: impl Fn(f64) + 'static) {
+        self.playback.connect_volume(f);
+    }
+
     pub fn set_black(&self, black: bool) {
         self.canvas.set_black(black);
+        self.playback.set_black(black);
     }
 
     /// Opens the item at `position` of `model`; `screen` is in device pixels.
@@ -167,6 +190,7 @@ impl Viewer {
 
     fn exit(&self) {
         self.stop_animation();
+        self.playback.stop();
         if let Some(timer) = self.cursor_timer.take() {
             timer.remove();
         }
@@ -187,6 +211,8 @@ impl Viewer {
         self.current.replace(Some(item.clone()));
         self.failed.set(false);
         self.switched.set(Some(Instant::now()));
+        let video = item.entry().kind == Kind::Video;
+        self.canvas.set_fill(video);
         let cached = self.cache.borrow().get(&item.id()).cloned();
         match cached {
             Some(shown) => self.display(item.id(), &shown),
@@ -206,8 +232,14 @@ impl Viewer {
                 self.showing.set(0);
             }
         }
+        if !video || !self.playback.play(&item.entry().path) {
+            self.playback.stop();
+        }
         self.update_overlays();
         self.request();
+        if !video {
+            self.playback.show_controls(false);
+        }
     }
 
     fn display(&self, id: u64, shown: &Shown) {
@@ -232,6 +264,8 @@ impl Viewer {
 
     /// Asks for the current item (and full detail if zoomed past the
     /// preview), then the next and previous ones; drops other decoded items.
+    /// A playing video needs no still, and its neighbors wait until it shows
+    /// a frame, leaving the drive to mpv.
     fn request(&self) {
         let Some(current) = self.current.borrow().clone() else {
             return;
@@ -259,10 +293,17 @@ impl Viewer {
                 priority,
             }
         };
+        let playing = self.playback.is_active();
+        let starting = playing && !self.playback.is_ready();
         let mut requests = Vec::new();
         let cache = self.cache.borrow();
         for (item, priority) in &wanted {
-            if !cache.contains_key(&item.id()) {
+            let skip = if item.id() == current.id() {
+                playing
+            } else {
+                starting
+            };
+            if !skip && !cache.contains_key(&item.id()) {
                 requests.push(request(item, screen, *priority));
             }
         }
@@ -448,6 +489,7 @@ impl Viewer {
     fn toggle_background(&self) {
         let black = !self.canvas.is_black();
         self.canvas.set_black(black);
+        self.playback.set_black(black);
         if let Some(f) = self.on_background.borrow().as_ref() {
             f(black);
         }
@@ -458,10 +500,13 @@ impl Viewer {
             return;
         };
         let entry = item.entry();
+        let video = entry.kind == Kind::Video;
         let note = if self.failed.get() {
             Some("Can't open this file")
-        } else if entry.kind == Kind::Video {
-            Some("Video playback isn't built yet (Stage 5)")
+        } else if video && self.playback.failed() {
+            Some("Can't play this video")
+        } else if video && self.playback.unavailable() {
+            Some("Video playback isn't available (mpv didn't start)")
         } else {
             None
         };
@@ -518,9 +563,11 @@ impl Viewer {
         (index, total)
     }
 
-    /// Shows the pointer, and hides it again after a moment of stillness.
+    /// Shows the pointer (and a video's controls), and hides them again
+    /// after a moment of stillness away from the controls.
     fn pointer_moved(&self) {
         self.widget.set_cursor(None);
+        self.playback.show_controls(true);
         if let Some(timer) = self.cursor_timer.take() {
             timer.remove();
         }
@@ -528,10 +575,72 @@ impl Viewer {
         let timer = glib::timeout_add_local_once(CURSOR_HIDE, move || {
             if let Some(viewer) = me.upgrade() {
                 viewer.cursor_timer.take();
+                if viewer.playback.controls_hovered() {
+                    viewer.pointer_moved();
+                    return;
+                }
                 viewer.widget.set_cursor_from_name(Some("none"));
+                viewer.playback.show_controls(false);
             }
         });
         self.cursor_timer.replace(Some(timer));
+    }
+
+    fn video_current(&self) -> bool {
+        self.current
+            .borrow()
+            .as_ref()
+            .is_some_and(|item| item.entry().kind == Kind::Video)
+    }
+
+    /// Handles a key without Ctrl or Alt; false if it isn't ours.
+    fn key_pressed(&self, key: gdk::Key) -> bool {
+        use gdk::Key;
+        match key {
+            Key::Escape => self.exit(),
+            Key::Right | Key::Page_Down | Key::KP_Page_Down => self.go(self.neighbor(1)),
+            Key::Left | Key::Page_Up | Key::KP_Page_Up | Key::BackSpace => {
+                self.go(self.neighbor(-1))
+            }
+            Key::Home | Key::KP_Home => self.go(self.media_from(0, 1)),
+            Key::End | Key::KP_End => {
+                let last = self.model.borrow().as_ref().map_or(0, |m| m.n_items());
+                self.go(self.media_from(i64::from(last) - 1, -1));
+            }
+            Key::_0 | Key::KP_0 => self.canvas.fit(),
+            Key::b | Key::B => self.toggle_background(),
+            Key::i | Key::I => {
+                self.show_info.set(!self.show_info.get());
+                self.update_overlays();
+            }
+            Key::Delete | Key::KP_Delete => self.delete_current(),
+            Key::space if self.video_current() => self.playback.toggle_pause(),
+            Key::m | Key::M if self.video_current() => self.playback.toggle_mute(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The plain wheel zooms around the pointer; on a video it sets the volume.
+    fn wheel(&self, notches: f64) {
+        if self.video_current() {
+            self.playback.step_volume(-notches);
+            self.pointer_moved();
+            return;
+        }
+        let (x, y) = self.pointer.get();
+        self.canvas.zoom_at(ZOOM_STEP.powf(-notches), x, y);
+        self.request();
+    }
+
+    /// A click without movement toggles 100%, or pauses a video.
+    fn clicked(&self, x: f64, y: f64) {
+        if !self.video_current() {
+            self.canvas.toggle_actual_size(x, y);
+            self.request();
+        } else if !self.playback.controls_at(&self.widget, x, y) {
+            self.playback.toggle_pause();
+        }
     }
 
     fn connect_input(self: &Rc<Self>) {
@@ -542,35 +651,13 @@ impl Viewer {
             #[upgrade_or]
             glib::Propagation::Proceed,
             move |_, key, _, modifiers| {
-                if modifiers
-                    .intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK)
-                {
-                    return glib::Propagation::Proceed;
+                let plain = !modifiers
+                    .intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK);
+                if plain && viewer.key_pressed(key) {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
                 }
-                use gdk::Key;
-                match key {
-                    Key::Escape => viewer.exit(),
-                    Key::Right | Key::Page_Down | Key::KP_Page_Down => {
-                        viewer.go(viewer.neighbor(1))
-                    }
-                    Key::Left | Key::Page_Up | Key::KP_Page_Up | Key::BackSpace => {
-                        viewer.go(viewer.neighbor(-1))
-                    }
-                    Key::Home | Key::KP_Home => viewer.go(viewer.media_from(0, 1)),
-                    Key::End | Key::KP_End => {
-                        let last = viewer.model.borrow().as_ref().map_or(0, |m| m.n_items());
-                        viewer.go(viewer.media_from(i64::from(last) - 1, -1));
-                    }
-                    Key::_0 | Key::KP_0 => viewer.canvas.fit(),
-                    Key::b | Key::B => viewer.toggle_background(),
-                    Key::i | Key::I => {
-                        viewer.show_info.set(!viewer.show_info.get());
-                        viewer.update_overlays();
-                    }
-                    Key::Delete | Key::KP_Delete => viewer.delete_current(),
-                    _ => return glib::Propagation::Proceed,
-                }
-                glib::Propagation::Stop
             }
         ));
         self.widget.add_controller(keys);
@@ -587,7 +674,6 @@ impl Viewer {
         ));
         self.widget.add_controller(motion);
 
-        // The plain wheel zooms around the pointer (videos get volume in Stage 5).
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         scroll.connect_scroll(glib::clone!(
             #[weak(rename_to = viewer)]
@@ -595,19 +681,13 @@ impl Viewer {
             #[upgrade_or]
             glib::Propagation::Proceed,
             move |controller, _, dy| {
-                let notches = match controller.unit() {
-                    gdk::ScrollUnit::Wheel => dy,
-                    _ => dy / 40.0,
-                };
-                let (x, y) = viewer.pointer.get();
-                viewer.canvas.zoom_at(ZOOM_STEP.powf(-notches), x, y);
-                viewer.request();
+                viewer.wheel(playback::notches(controller, dy));
                 glib::Propagation::Stop
             }
         ));
         self.widget.add_controller(scroll);
 
-        // Drag pans when zoomed; a click without movement toggles 100%.
+        // Drag pans when zoomed.
         let drag = gtk::GestureDrag::new();
         let last = Rc::new(Cell::new((0.0, 0.0)));
         drag.connect_drag_begin(glib::clone!(
@@ -632,8 +712,7 @@ impl Viewer {
                 if dx.hypot(dy) < DRAG_THRESHOLD
                     && let Some((x, y)) = drag.start_point()
                 {
-                    viewer.canvas.toggle_actual_size(x, y);
-                    viewer.request();
+                    viewer.clicked(x, y);
                 }
             }
         ));

@@ -135,9 +135,9 @@ fn worker(shared: &Shared, tx: &async_channel::Sender<Loaded>) {
 
 fn load(request: &Request, codec: &mut Codec) -> Option<Loaded> {
     if request.kind == Kind::Video {
-        // A still frame until playback exists; it never needs refining.
+        // The poster mpv's first frame replaces; it never needs refining.
         let edge = request.screen.map_or(1920, |(w, h)| w.max(h));
-        let thumb = video::thumbnail(&request.path, edge, request.format).ok()?;
+        let thumb = video::poster(&request.path, edge, request.format).ok()?;
         return Some(Loaded::Still {
             id: request.id,
             width: thumb.meta.width,

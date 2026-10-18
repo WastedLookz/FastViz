@@ -63,6 +63,7 @@ pub struct Window {
     pages: gtk::Stack,
     viewer: Rc<Viewer>,
     viewer_black: Rc<Cell<bool>>,
+    volume: Cell<f64>,
 }
 
 impl Window {
@@ -172,7 +173,7 @@ impl Window {
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
         view.set_content(Some(&content));
-        let viewer = Viewer::new(settings.viewer_black);
+        let viewer = Viewer::new(settings.viewer_black, settings.volume);
         let pages = gtk::Stack::new();
         pages.add_named(&view, Some("browser"));
         pages.add_named(&viewer.widget, Some("viewer"));
@@ -225,6 +226,7 @@ impl Window {
             pages,
             viewer,
             viewer_black: Rc::new(Cell::new(settings.viewer_black)),
+            volume: Cell::new(settings.volume),
         });
         this.setup_actions(&settings);
         this.setup_file_actions();
@@ -385,7 +387,7 @@ impl Window {
 
     fn connect_signals(self: &Rc<Self>) {
         // Double-click or Enter: folders open in place, other files in their
-        // default app. Photos and videos get the fullscreen viewer in Stage 3.
+        // default app, photos and videos fullscreen.
         self.grid.view.connect_activate(glib::clone!(
             #[weak(rename_to = this)]
             self,
@@ -757,6 +759,7 @@ impl Window {
             sort_desc,
             thumb_size: self.size.value().round() as i32,
             viewer_black: self.viewer_black.get(),
+            volume: self.volume.get(),
             expanded: self.tree.expanded_rows(),
         }
         .save();

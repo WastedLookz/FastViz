@@ -7,6 +7,7 @@ mod grid;
 mod loader;
 mod media;
 mod model;
+mod mpv;
 mod natsort;
 mod prefs;
 mod scan;

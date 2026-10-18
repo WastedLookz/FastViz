@@ -25,6 +25,8 @@ mod imp {
         /// The image point at the middle of the view while zoomed.
         pub center: Cell<(f64, f64)>,
         pub black: Cell<bool>,
+        /// Fit by scaling up too (videos, matching mpv), not only down.
+        pub fill: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -116,20 +118,27 @@ impl Canvas {
         self.imp().black.get()
     }
 
+    /// Videos fit the screen like mpv draws them, small ones scaled up.
+    pub fn set_fill(&self, fill: bool) {
+        self.imp().fill.set(fill);
+        self.queue_draw();
+    }
+
     pub fn is_zoomed(&self) -> bool {
         self.imp().zoom.get().is_some()
     }
 
-    /// Shrink-to-fit: never larger than 100% (one image pixel per device pixel).
+    /// Shrink-to-fit: never larger than 100% (one image pixel per device
+    /// pixel), unless filling.
     fn fit_scale(&self) -> f64 {
-        let (iw, ih) = self.imp().image.get();
+        let imp = self.imp();
+        let (iw, ih) = imp.image.get();
         let actual = 1.0 / f64::from(self.scale_factor());
         if iw <= 0.0 || ih <= 0.0 {
             return actual;
         }
-        (f64::from(self.width()) / iw)
-            .min(f64::from(self.height()) / ih)
-            .min(actual)
+        let fit = (f64::from(self.width()) / iw).min(f64::from(self.height()) / ih);
+        if imp.fill.get() { fit } else { fit.min(actual) }
     }
 
     fn scale(&self) -> f64 {

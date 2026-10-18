@@ -112,3 +112,15 @@
   border-radius: 8px;
   padding: 8px 12px;
 }
+
+.fv-controls {
+  background-color: alpha(black, 0.6);
+  color: white;
+  border-radius: 12px;
+  padding: 4px 10px;
+}
+
+.fv-time {
+  font-feature-settings: "tnum";
+  margin: 0 6px;
+}

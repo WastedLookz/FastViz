@@ -27,6 +27,8 @@ pub struct Settings {
     pub thumb_size: i32,
     /// Fullscreen background: black instead of 50% gray.
     pub viewer_black: bool,
+    /// Video volume in percent.
+    pub volume: f64,
     /// Expanded folder-tree rows as (root, folder) path pairs.
     pub expanded: Vec<(String, String)>,
 }
@@ -47,6 +49,7 @@ impl Default for Settings {
             sort_desc: true,
             thumb_size: 160,
             viewer_black: false,
+            volume: 100.0,
             expanded: Vec::new(),
         }
     }

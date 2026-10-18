@@ -25,6 +25,11 @@ impl Window {
             self,
             move |black| this.viewer_black.set(black)
         ));
+        self.viewer.connect_volume(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |volume| this.volume.set(volume)
+        ));
     }
 
     /// Opens the photo or video at `position` (in grid order) fullscreen.
