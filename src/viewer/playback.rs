@@ -140,7 +140,7 @@ fn clock(seconds: f64) -> String {
 }
 
 type Handler = Box<dyn Fn()>;
-type VolumeHandler = Box<dyn Fn(f64)>;
+type ValueHandler = Box<dyn Fn(f64)>;
 
 pub struct Playback {
     me: Weak<Self>,
@@ -179,7 +179,9 @@ pub struct Playback {
     /// Idle inhibition while a video plays, so the screen doesn't blank.
     inhibit: RefCell<Option<(gtk::Application, u32)>>,
     on_ready: RefCell<Option<Handler>>,
-    on_volume: RefCell<Option<VolumeHandler>>,
+    on_ended: RefCell<Option<Handler>>,
+    on_volume: RefCell<Option<ValueHandler>>,
+    on_wheel: RefCell<Option<ValueHandler>>,
 }
 
 impl Playback {
@@ -264,7 +266,9 @@ impl Playback {
             loaded_at: Cell::new(None),
             inhibit: RefCell::default(),
             on_ready: RefCell::default(),
+            on_ended: RefCell::default(),
             on_volume: RefCell::default(),
+            on_wheel: RefCell::default(),
         });
         playback.connect_signals(&seek_scale, &volume_slider);
         playback.update_controls();
@@ -276,9 +280,20 @@ impl Playback {
         self.on_ready.replace(Some(Box::new(f)));
     }
 
+    /// Called when the current video plays to its end.
+    pub fn connect_ended(&self, f: impl Fn() + 'static) {
+        self.on_ended.replace(Some(Box::new(f)));
+    }
+
     /// Called when the volume changes (to remember it).
     pub fn connect_volume(&self, f: impl Fn(f64) + 'static) {
         self.on_volume.replace(Some(Box::new(f)));
+    }
+
+    /// Called with wheel notches over the seek bar, which leaves the wheel
+    /// to the viewer (only the volume slider takes it).
+    pub fn connect_wheel(&self, f: impl Fn(f64) + 'static) {
+        self.on_wheel.replace(Some(Box::new(f)));
     }
 
     /// Starts playing `path`; false if playback can't work here at all.
@@ -343,6 +358,11 @@ impl Playback {
         self.has_frame.get() || self.failed.get()
     }
 
+    /// The current video played to its end.
+    pub fn ended(&self) -> bool {
+        self.eof.get()
+    }
+
     pub fn failed(&self) -> bool {
         self.failed.get()
     }
@@ -364,6 +384,14 @@ impl Playback {
             self.set_paused(&player, false);
         } else {
             self.set_paused(&player, !self.paused.get());
+        }
+    }
+
+    pub fn set_pause(&self, paused: bool) {
+        if let Some(player) = self.player.borrow().clone()
+            && self.is_active()
+        {
+            self.set_paused(&player, paused);
         }
     }
 
@@ -631,6 +659,12 @@ impl Playback {
             (EOF, Value::Flag(eof)) => {
                 self.eof.set(eof);
                 self.update_inhibit();
+                if eof
+                    && self.has_frame.get()
+                    && let Some(f) = self.on_ended.borrow().as_ref()
+                {
+                    f();
+                }
             }
             (MUTE, Value::Flag(muted)) => self.muted.set(muted),
             (VOLUME, Value::Double(volume)) => self.volume_changed(volume),
@@ -782,7 +816,7 @@ impl Playback {
                 glib::Propagation::Proceed
             }
         ));
-        // The wheel means volume everywhere on a video, the seek bar included.
+        // The seek bar would seek on the wheel; the viewer gets it instead.
         let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
         wheel.connect_scroll(glib::clone!(
@@ -791,7 +825,9 @@ impl Playback {
             #[upgrade_or]
             glib::Propagation::Proceed,
             move |controller, _, dy| {
-                playback.step_volume(-notches(controller, dy));
+                if let Some(f) = playback.on_wheel.borrow().as_ref() {
+                    f(notches(controller, dy));
+                }
                 glib::Propagation::Stop
             }
         ));

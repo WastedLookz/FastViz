@@ -452,7 +452,8 @@ mod thumb_imp {
                     scale = scale.min(1.0 / widget.scale_factor() as f32);
                 }
                 let (w, h) = (tw * scale, th * scale);
-                let rect = graphene::Rect::new((width - w) / 2.0, (height - h) / 2.0, w, h);
+                // Bottom-aligned like Nautilus, so the name sits right under it.
+                let rect = graphene::Rect::new((width - w) / 2.0, height - h, w, h);
                 snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(rect, 3.0));
                 // Trilinear uses mipmaps, so any downscale stays smooth.
                 snapshot.append_scaled_texture(texture, gsk::ScalingFilter::Trilinear, &rect);
@@ -464,7 +465,9 @@ mod thumb_imp {
             }
 
             if let Some(icon) = self.icon.borrow().as_ref() {
-                draw_icon(&widget, snapshot, icon, width.min(height) * 0.7, &bounds);
+                let size = width.min(height) * 0.7;
+                let area = graphene::Rect::new(0.0, height - size, width, size);
+                draw_icon(&widget, snapshot, icon, size, &area);
                 return;
             }
 

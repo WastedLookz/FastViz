@@ -2,11 +2,13 @@
 //! and pan, and the neighbors preloaded (decoded and uploaded) so moving
 //! between items is instant. Until an item decodes, its grid thumbnail
 //! stands in, stretched to the same place. Videos play with mpv over the
-//! canvas, which shows their first frame until playback starts.
+//! canvas, which shows their first frame until playback starts. The wheel
+//! moves between items; Up/Down zoom.
 
 mod canvas;
 mod load;
 mod playback;
+mod slideshow;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -23,8 +25,10 @@ use crate::trace;
 use canvas::Canvas;
 use load::{Loaded, Pool, Request};
 use playback::Playback;
+use slideshow::Slideshow;
+pub use slideshow::SlideshowOptions;
 
-/// Zoom factor per wheel notch.
+/// Zoom factor per Up/Down press.
 const ZOOM_STEP: f64 = 1.25;
 /// Pointer travel that turns a click into a drag.
 const DRAG_THRESHOLD: f64 = 4.0;
@@ -64,6 +68,8 @@ pub struct Viewer {
     animation: RefCell<Option<glib::SourceId>>,
     cursor_timer: RefCell<Option<glib::SourceId>>,
     pointer: Cell<(f64, f64)>,
+    /// Wheel travel not yet turned into a move (touchpads scroll in pixels).
+    wheel_travel: Cell<f64>,
     show_info: Cell<bool>,
     /// The current item couldn't be decoded.
     failed: Cell<bool>,
@@ -72,13 +78,16 @@ pub struct Viewer {
     on_exit: RefCell<Option<ItemHandler>>,
     on_delete: RefCell<Option<DeleteHandler>>,
     on_background: RefCell<Option<BackgroundHandler>>,
+    slideshow: RefCell<Option<Slideshow>>,
+    slideshow_options: Cell<SlideshowOptions>,
 }
 
 impl Viewer {
-    pub fn new(black: bool, volume: f64) -> Rc<Self> {
+    pub fn new(black: bool, volume: f64, info: bool, slideshow: SlideshowOptions) -> Rc<Self> {
         let canvas = Canvas::default();
         canvas.set_black(black);
         let playback = Playback::new(volume, black);
+        let show_info = info;
         let info = gtk::Label::builder()
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Start)
@@ -121,12 +130,15 @@ impl Viewer {
             animation: RefCell::default(),
             cursor_timer: RefCell::default(),
             pointer: Cell::new((0.0, 0.0)),
-            show_info: Cell::new(false),
+            wheel_travel: Cell::new(0.0),
+            show_info: Cell::new(show_info),
             failed: Cell::new(false),
             switched: Cell::new(None),
             on_exit: RefCell::default(),
             on_delete: RefCell::default(),
             on_background: RefCell::default(),
+            slideshow: RefCell::default(),
+            slideshow_options: Cell::new(slideshow),
         });
         viewer.connect_input();
         // A video showing its first frame (or failing) frees the drive for
@@ -136,6 +148,19 @@ impl Viewer {
             if let Some(viewer) = weak.upgrade() {
                 viewer.update_overlays();
                 viewer.request();
+                viewer.slideshow_arm();
+            }
+        });
+        let weak = Rc::downgrade(&viewer);
+        viewer.playback.connect_ended(move || {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.slideshow_video_ended();
+            }
+        });
+        let weak = Rc::downgrade(&viewer);
+        viewer.playback.connect_wheel(move |notches| {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.wheel(notches);
             }
         });
 
@@ -177,6 +202,22 @@ impl Viewer {
         self.playback.set_black(black);
     }
 
+    /// Whether the I info overlay is on (remembered between sessions).
+    pub fn info_shown(&self) -> bool {
+        self.show_info.get()
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.current.borrow().is_some()
+    }
+
+    /// Leaves fullscreen, as Esc does.
+    pub fn close(&self) {
+        if self.is_open() {
+            self.exit();
+        }
+    }
+
     /// Opens the item at `position` of `model`; `screen` is in device pixels.
     pub fn open(&self, model: &gtk::SelectionModel, position: u32, screen: (u32, u32)) {
         self.model.replace(Some(model.clone()));
@@ -189,6 +230,7 @@ impl Viewer {
     }
 
     fn exit(&self) {
+        self.stop_slideshow();
         self.stop_animation();
         self.playback.stop();
         if let Some(timer) = self.cursor_timer.take() {
@@ -240,6 +282,7 @@ impl Viewer {
         if !video {
             self.playback.show_controls(false);
         }
+        self.slideshow_arm();
     }
 
     fn display(&self, id: u64, shown: &Shown) {
@@ -441,16 +484,25 @@ impl Viewer {
         if model.item(position).as_ref() == Some(current.upcast_ref()) {
             return Some(position);
         }
-        let found =
-            (0..model.n_items()).find(|&p| model.item(p).as_ref() == Some(current.upcast_ref()))?;
+        let found = self.position_of(&current)?;
         self.position.set(found);
         Some(found)
     }
 
-    /// The nearest photo or video `step` (+1 or -1) away from the current one.
+    /// The nearest photo or video `step` (+1 or -1) away from the current
+    /// one, in slideshow order while one runs.
     fn neighbor(&self, step: i64) -> Option<(u32, FileItem)> {
+        if self.slideshow.borrow().is_some() {
+            return self.slideshow_neighbor(step);
+        }
         let start = self.locate()?;
         self.media_from(i64::from(start) + step, step)
+    }
+
+    /// Where `item` is in the grid now.
+    fn position_of(&self, item: &FileItem) -> Option<u32> {
+        let model = self.model.borrow().clone()?;
+        (0..model.n_items()).find(|&p| model.item(p).as_ref() == Some(item.upcast_ref()))
     }
 
     /// The first photo or video at or after `position`, moving by `step`.
@@ -507,6 +559,8 @@ impl Viewer {
             Some("Can't play this video")
         } else if video && self.playback.unavailable() {
             Some("Video playback isn't available (mpv didn't start)")
+        } else if self.slideshow_paused() {
+            Some("Slideshow paused")
         } else {
             None
         };
@@ -613,7 +667,10 @@ impl Viewer {
                 self.show_info.set(!self.show_info.get());
                 self.update_overlays();
             }
+            Key::Up | Key::KP_Up => self.zoom_or_volume(1.0),
+            Key::Down | Key::KP_Down => self.zoom_or_volume(-1.0),
             Key::Delete | Key::KP_Delete => self.delete_current(),
+            Key::space if self.slideshow.borrow().is_some() => self.toggle_slideshow_pause(),
             Key::space if self.video_current() => self.playback.toggle_pause(),
             Key::m | Key::M if self.video_current() => self.playback.toggle_mute(),
             _ => return false,
@@ -621,24 +678,51 @@ impl Viewer {
         true
     }
 
-    /// The plain wheel zooms around the pointer; on a video it sets the volume.
+    /// The wheel moves between items, one per notch (down = next).
     fn wheel(&self, notches: f64) {
+        let mut travel = self.wheel_travel.get();
+        if travel * notches < 0.0 {
+            travel = 0.0;
+        }
+        travel += notches;
+        while travel >= 1.0 {
+            self.go(self.neighbor(1));
+            travel -= 1.0;
+        }
+        while travel <= -1.0 {
+            self.go(self.neighbor(-1));
+            travel += 1.0;
+        }
+        self.wheel_travel.set(travel);
+    }
+
+    /// Up/Down: zoom around the middle of the screen, or a video's volume.
+    fn zoom_or_volume(&self, steps: f64) {
         if self.video_current() {
-            self.playback.step_volume(-notches);
+            self.playback.step_volume(steps);
             self.pointer_moved();
             return;
         }
-        let (x, y) = self.pointer.get();
-        self.canvas.zoom_at(ZOOM_STEP.powf(-notches), x, y);
+        let (x, y) = (
+            f64::from(self.widget.width()) / 2.0,
+            f64::from(self.widget.height()) / 2.0,
+        );
+        self.canvas.zoom_at(ZOOM_STEP.powf(steps), x, y);
         self.request();
     }
 
-    /// A click without movement toggles 100%, or pauses a video.
+    /// A click without movement toggles 100%, or pauses a video; during a
+    /// slideshow it stops the slideshow.
     fn clicked(&self, x: f64, y: f64) {
-        if !self.video_current() {
+        if self.playback.controls_at(&self.widget, x, y) {
+            return;
+        }
+        if self.slideshow.borrow().is_some() {
+            self.stop_slideshow();
+        } else if !self.video_current() {
             self.canvas.toggle_actual_size(x, y);
             self.request();
-        } else if !self.playback.controls_at(&self.widget, x, y) {
+        } else {
             self.playback.toggle_pause();
         }
     }

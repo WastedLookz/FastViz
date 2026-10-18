@@ -19,7 +19,7 @@ use crate::settings::Settings;
 use crate::storage;
 use crate::trace;
 use crate::tree::FolderTree;
-use crate::viewer::Viewer;
+use crate::viewer::{SlideshowOptions, Viewer};
 
 mod files;
 mod fullscreen;
@@ -64,10 +64,14 @@ pub struct Window {
     viewer: Rc<Viewer>,
     viewer_black: Rc<Cell<bool>>,
     volume: Cell<f64>,
+    slideshow: Cell<SlideshowOptions>,
+    /// A file opened from outside, shown once the folder scan lists it.
+    pending_open: RefCell<Option<PathBuf>>,
 }
 
 impl Window {
-    pub fn new(app: &adw::Application, settings: Settings) -> Rc<Self> {
+    /// Opens `initial` (a file or folder from outside) instead of the start folder.
+    pub fn new(app: &adw::Application, settings: Settings, initial: Option<PathBuf>) -> Rc<Self> {
         let sort = Rc::new(Cell::new((settings.sort_key, settings.sort_desc)));
         let store = gio::ListStore::new::<FileItem>();
         let sorter = model::sorter(sort.clone());
@@ -173,7 +177,17 @@ impl Window {
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
         view.set_content(Some(&content));
-        let viewer = Viewer::new(settings.viewer_black, settings.volume);
+        let slideshow = SlideshowOptions {
+            interval: settings.slideshow_interval.clamp(1.0, 60.0),
+            repeat: settings.slideshow_loop,
+            shuffle: settings.slideshow_shuffle,
+        };
+        let viewer = Viewer::new(
+            settings.viewer_black,
+            settings.volume,
+            settings.viewer_info,
+            slideshow,
+        );
         let pages = gtk::Stack::new();
         pages.add_named(&view, Some("browser"));
         pages.add_named(&viewer.widget, Some("viewer"));
@@ -227,6 +241,8 @@ impl Window {
             viewer,
             viewer_black: Rc::new(Cell::new(settings.viewer_black)),
             volume: Cell::new(settings.volume),
+            slideshow: Cell::new(slideshow),
+            pending_open: RefCell::default(),
         });
         this.setup_actions(&settings);
         this.setup_file_actions();
@@ -240,8 +256,59 @@ impl Window {
             settings.start_folder.as_ref()
         };
         let start = start.map(PathBuf::from).unwrap_or_else(glib::home_dir);
-        this.navigate(start, true);
+        match initial {
+            Some(path) => this.open_path(path),
+            None => this.navigate(start, true),
+        }
         this
+    }
+
+    /// Opens `path` from the file manager or the command line: a folder in
+    /// the grid, a file in its folder (fullscreen if it's a photo or video).
+    pub fn open_path(self: &Rc<Self>, path: PathBuf) {
+        let (folder, file) = if path.is_dir() {
+            (path, None)
+        } else {
+            match path.parent() {
+                Some(folder) => (folder.to_path_buf(), Some(path)),
+                None => return,
+            }
+        };
+        let here = self.current.borrow().as_ref() == Some(&folder);
+        // Another file in this folder replaces the one on screen in place.
+        if !here || file.is_none() {
+            self.viewer.close();
+        }
+        self.pending_open.replace(file);
+        if here && !self.scanning.get() {
+            self.open_pending();
+        } else {
+            self.navigate(folder, true);
+        }
+    }
+
+    /// Shows the file waiting from `open_path` if the grid lists it yet.
+    fn open_pending(self: &Rc<Self>) {
+        let Some(path) = self.pending_open.borrow().clone() else {
+            return;
+        };
+        let found = (0..self.selection.n_items()).find_map(|position| {
+            let item = self.selection.item(position).and_downcast::<FileItem>()?;
+            (item.entry().path == path).then_some((position, item))
+        });
+        let Some((position, item)) = found else {
+            return;
+        };
+        self.pending_open.take();
+        if item.entry().kind.is_media() {
+            self.open_viewer(position);
+        } else {
+            self.grid.view.scroll_to(
+                position,
+                gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS,
+                None,
+            );
+        }
     }
 
     pub fn present(&self) {
@@ -352,8 +419,24 @@ impl Window {
                         this,
                         move |black| this.set_viewer_black(black)
                     ),
+                    this.slideshow.get(),
+                    glib::clone!(
+                        #[weak]
+                        this,
+                        move |options| {
+                            this.slideshow.set(options);
+                            this.viewer.set_slideshow_options(options);
+                        }
+                    ),
                 )
             }
+        ));
+
+        let slideshow = gio::SimpleAction::new("slideshow", None);
+        slideshow.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, _| this.start_slideshow()
         ));
 
         let go_up = gio::SimpleAction::new("go-up", None);
@@ -379,6 +462,7 @@ impl Window {
             show_hidden,
             show_pane,
             preferences,
+            slideshow,
             go_up,
         ] {
             self.window.add_action(&action);
@@ -498,6 +582,7 @@ impl Window {
                         let batch_started = Instant::now();
                         let count = entries.len();
                         this.add_entries(entries);
+                        this.open_pending();
                         trace!(
                             "scan batch: {count} items inserted in {:.1} ms",
                             batch_started.elapsed().as_secs_f64() * 1e3
@@ -578,6 +663,8 @@ impl Window {
 
     fn scan_done(self: &Rc<Self>, result: Result<(), String>) {
         self.scan_task.take();
+        // Not listed (e.g. a hidden file with hidden files off): just the folder.
+        self.pending_open.take();
         self.thumbnailer.scan_finished();
         self.scanning.set(false);
         self.update_count_status();
@@ -760,6 +847,10 @@ impl Window {
             thumb_size: self.size.value().round() as i32,
             viewer_black: self.viewer_black.get(),
             volume: self.volume.get(),
+            viewer_info: self.viewer.info_shown(),
+            slideshow_interval: self.slideshow.get().interval,
+            slideshow_loop: self.slideshow.get().repeat,
+            slideshow_shuffle: self.slideshow.get().shuffle,
             expanded: self.tree.expanded_rows(),
         }
         .save();
@@ -801,8 +892,11 @@ fn sort_menu() -> gio::Menu {
 
 fn main_menu() -> gio::Menu {
     let menu = gio::Menu::new();
-    menu.append(Some("Show Hidden Folders"), Some("win.show-hidden"));
-    menu.append(Some("Show Folder Pane"), Some("win.show-pane"));
+    menu.append(Some("Slideshow"), Some("win.slideshow"));
+    let view = gio::Menu::new();
+    view.append(Some("Show Hidden Folders"), Some("win.show-hidden"));
+    view.append(Some("Show Folder Pane"), Some("win.show-pane"));
+    menu.append_section(None, &view);
     let app = gio::Menu::new();
     app.append(Some("Preferences"), Some("win.preferences"));
     menu.append_section(None, &app);

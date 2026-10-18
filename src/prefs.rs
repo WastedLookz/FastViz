@@ -1,11 +1,13 @@
 //! Preferences dialog.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+
+use crate::viewer::SlideshowOptions;
 
 /// Which folder opens at startup.
 #[derive(Debug, Default)]
@@ -24,6 +26,8 @@ pub fn present(
     current: Option<PathBuf>,
     black: bool,
     on_black: impl Fn(bool) + 'static,
+    slideshow: SlideshowOptions,
+    on_slideshow: impl Fn(SlideshowOptions) + 'static,
 ) {
     let state = startup.borrow();
     let folder_row = adw::ActionRow::builder()
@@ -123,9 +127,66 @@ pub fn present(
     let page = adw::PreferencesPage::new();
     page.add(&group);
     page.add(&viewer_group);
+    page.add(&slideshow_group(slideshow, on_slideshow));
     let dialog = adw::PreferencesDialog::new();
     dialog.add(&page);
     dialog.present(Some(window));
+}
+
+/// Interval, loop and shuffle; each change applies immediately.
+fn slideshow_group(
+    options: SlideshowOptions,
+    on_change: impl Fn(SlideshowOptions) + 'static,
+) -> adw::PreferencesGroup {
+    let interval = adw::SpinRow::builder()
+        .title("Seconds per Photo")
+        .subtitle("Videos play to the end; F5 starts a slideshow")
+        .adjustment(&gtk::Adjustment::new(
+            options.interval,
+            1.0,
+            60.0,
+            0.5,
+            1.0,
+            0.0,
+        ))
+        .digits(1)
+        .build();
+    let repeat = adw::SwitchRow::builder()
+        .title("Loop")
+        .subtitle("Start over after the last item")
+        .active(options.repeat)
+        .build();
+    let shuffle = adw::SwitchRow::builder()
+        .title("Shuffle")
+        .subtitle("Random order")
+        .active(options.shuffle)
+        .build();
+    let state = Rc::new(Cell::new(options));
+    let on_change = Rc::new(on_change);
+    let update = move |change: &dyn Fn(&mut SlideshowOptions)| {
+        let mut options = state.get();
+        change(&mut options);
+        state.set(options);
+        on_change(options);
+    };
+    let update = Rc::new(update);
+    interval.connect_value_notify(glib::clone!(
+        #[strong]
+        update,
+        move |row| update(&|o| o.interval = row.value())
+    ));
+    repeat.connect_active_notify(glib::clone!(
+        #[strong]
+        update,
+        move |row| update(&|o| o.repeat = row.is_active())
+    ));
+    shuffle.connect_active_notify(move |row| update(&|o| o.shuffle = row.is_active()));
+
+    let group = adw::PreferencesGroup::builder().title("Slideshow").build();
+    group.add(&interval);
+    group.add(&repeat);
+    group.add(&shuffle);
+    group
 }
 
 fn set_folder(startup: &RefCell<Startup>, row: &adw::ActionRow, path: PathBuf) {

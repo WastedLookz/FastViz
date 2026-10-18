@@ -87,6 +87,31 @@ impl Window {
         )
     }
 
+    /// F5: a slideshow from the item on screen, or from the selected (else
+    /// first) photo or video in the grid.
+    pub(super) fn start_slideshow(self: &Rc<Self>) {
+        if !self.viewer.is_open() {
+            let selected = self.selection.selection();
+            let from = if selected.is_empty() {
+                0
+            } else {
+                selected.minimum()
+            };
+            let media = |p: &u32| {
+                self.selection
+                    .item(*p)
+                    .and_downcast::<FileItem>()
+                    .is_some_and(|item| item.entry().kind.is_media())
+            };
+            let count = self.selection.n_items();
+            let Some(position) = (from..count).chain(0..from).find(media) else {
+                return;
+            };
+            self.open_viewer(position);
+        }
+        self.viewer.start_slideshow();
+    }
+
     pub(super) fn set_viewer_black(&self, black: bool) {
         self.viewer_black.set(black);
         self.viewer.set_black(black);

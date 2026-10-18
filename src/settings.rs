@@ -29,6 +29,12 @@ pub struct Settings {
     pub viewer_black: bool,
     /// Video volume in percent.
     pub volume: f64,
+    /// The fullscreen info overlay (I) is on.
+    pub viewer_info: bool,
+    /// Seconds per photo in a slideshow.
+    pub slideshow_interval: f64,
+    pub slideshow_loop: bool,
+    pub slideshow_shuffle: bool,
     /// Expanded folder-tree rows as (root, folder) path pairs.
     pub expanded: Vec<(String, String)>,
 }
@@ -50,6 +56,10 @@ impl Default for Settings {
             thumb_size: 160,
             viewer_black: false,
             volume: 100.0,
+            viewer_info: false,
+            slideshow_interval: 4.0,
+            slideshow_loop: true,
+            slideshow_shuffle: false,
             expanded: Vec::new(),
         }
     }
