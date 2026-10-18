@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FastViz
+GenericName=Photo and Video Browser
+Comment=Browse photos and videos quickly
+Exec=@BINARY@
+Icon=io.github.fastviz.FastViz
+Terminal=false
+Categories=Graphics;Viewer;Photography;GTK;
+Keywords=photo;image;video;viewer;browser;gallery;
+StartupNotify=true

@@ -11,6 +11,7 @@ use gtk::{gio, glib};
 
 use crate::grid::{self, Grid};
 use crate::loader::Thumbnailer;
+use crate::media::Kind;
 use crate::model::{self, FileItem, SortKey};
 use crate::prefs::{self, Startup};
 use crate::scan::{self, ScanMsg};
@@ -319,12 +320,61 @@ impl Window {
             }
         ));
 
-        for action in [sort_by, sort_desc, show_hidden, show_pane, preferences] {
+        let go_up = gio::SimpleAction::new("go-up", None);
+        go_up.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, _| {
+                let parent = this
+                    .current
+                    .borrow()
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                    .map(Path::to_path_buf);
+                if let Some(parent) = parent {
+                    this.navigate(parent, true);
+                }
+            }
+        ));
+
+        for action in [
+            sort_by,
+            sort_desc,
+            show_hidden,
+            show_pane,
+            preferences,
+            go_up,
+        ] {
             self.window.add_action(&action);
         }
     }
 
     fn connect_signals(self: &Rc<Self>) {
+        // Double-click or Enter: folders open in place, other files in their
+        // default app. Photos and videos get the fullscreen viewer in Stage 3.
+        self.grid.view.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, position| {
+                let Some(item) = this.selection.item(position).and_downcast::<FileItem>() else {
+                    return;
+                };
+                let entry = item.entry();
+                match entry.kind {
+                    Kind::Folder => this.navigate(entry.path.clone(), true),
+                    Kind::Other => {
+                        let file = gio::File::for_path(&entry.path);
+                        gtk::FileLauncher::new(Some(&file)).launch(
+                            Some(&this.window),
+                            None::<&gio::Cancellable>,
+                            |_| {},
+                        );
+                    }
+                    Kind::Image | Kind::Video => {}
+                }
+            }
+        ));
+
         self.thumbnailer.connect_meta(glib::clone!(
             #[weak(rename_to = this)]
             self,
@@ -477,6 +527,7 @@ impl Window {
                     move || {
                         this.resort_queued.set(false);
                         this.keeping_top(|| this.sorter.changed(gtk::SorterChange::Different));
+                        this.thumbnailer.order_changed();
                     }
                 ),
             );
@@ -507,7 +558,7 @@ impl Window {
                 self.stack.set_visible_child(&self.empty);
             }
             Ok(()) if self.totals.get().0 == 0 => {
-                self.empty.set_title("No Photos or Videos");
+                self.empty.set_title("Empty Folder");
                 self.empty.set_description(None);
                 self.stack.set_visible_child(&self.empty);
             }
@@ -525,6 +576,7 @@ impl Window {
         }
         let started = Instant::now();
         self.sorter.changed(gtk::SorterChange::Different);
+        self.thumbnailer.order_changed();
         trace!(
             "sorted {} items by {} in {:.1} ms",
             self.selection.n_items(),
@@ -723,6 +775,13 @@ fn main_menu() -> gio::Menu {
 /// The date is when it was taken if sorting by that, else when modified.
 fn describe(item: &FileItem, taken: bool) -> String {
     let entry = item.entry();
+    if entry.kind == Kind::Folder {
+        let date = glib::DateTime::from_unix_local(entry.mtime)
+            .and_then(|d| d.format("%Y-%m-%d %H:%M"))
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        return [entry.name.as_str(), &date, "Folder"].join("    ");
+    }
     let meta = item.meta();
     let time = match meta.and_then(|m| m.taken) {
         Some(taken_at) if taken => taken_at,

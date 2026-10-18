@@ -1,10 +1,10 @@
 //! Streaming folder scan on a worker thread.
 //!
-//! One `getdents` pass reads names and types (d_type), files are filtered by
-//! extension before anything else, and only media files get one `statx` each,
-//! relative to the open directory. Files without an extension are sniffed.
-//! Metadata already in the cache is attached up front, so a warm folder can
-//! sort by date taken or dimensions from the first batch.
+//! One `getdents` pass reads names and types (d_type), then each entry gets
+//! one `statx`, relative to the open directory. Folders and every file are
+//! listed; media is recognized by extension, and files without one are
+//! sniffed. Metadata already in the cache is attached up front, so a warm
+//! folder can sort by date taken or dimensions from the first batch.
 
 use std::fs;
 use std::io::Read;
@@ -29,6 +29,8 @@ pub struct Entry {
     pub kind: Kind,
     /// From the extension (or sniffed, for files without one).
     pub format: &'static str,
+    /// MIME type for non-media entries, used to pick their icon.
+    pub content_type: Option<String>,
     /// Cached metadata, if this version of the file was seen before.
     pub meta: Option<Meta>,
     /// The current decoder already failed on this version of the file.
@@ -102,30 +104,44 @@ fn run(
         if !show_hidden && is_hidden(&name) {
             continue;
         }
-        let classified = media::classify(&name);
-        if classified.is_none() && name.contains('.') {
-            continue;
-        }
         let Ok(file_type) = dirent.file_type() else {
             continue;
         };
-        let metadata = if file_type.is_file() {
-            dirent.metadata()
-        } else if file_type.is_symlink() {
+        let metadata = if file_type.is_symlink() {
             fs::metadata(dirent.path())
         } else {
-            continue;
+            dirent.metadata()
         };
         let Ok(metadata) = metadata else { continue };
-        if !metadata.is_file() {
-            continue;
-        }
         let path = dirent.path();
-        let Some((kind, format)) = classified.or_else(|| sniff_file(&path)) else {
+        let (kind, format) = if metadata.is_dir() {
+            (Kind::Folder, "Folder")
+        } else if !metadata.is_file() {
+            // Sockets, devices and such.
             continue;
+        } else if let Some(media) = media::classify(&name) {
+            media
+        } else if let Some(sniffed) = (!name.contains('.')).then(|| sniff_file(&path)).flatten() {
+            sniffed
+        } else {
+            (Kind::Other, media::other_label(&name))
+        };
+        let content_type = match kind {
+            Kind::Folder => Some("inode/directory".to_owned()),
+            Kind::Other => Some(
+                gtk::gio::content_type_guess(Some(&*name), None)
+                    .0
+                    .to_string(),
+            ),
+            _ => None,
         };
 
-        let (size, mtime) = (metadata.len(), metadata.mtime());
+        let size = if kind == Kind::Folder {
+            0
+        } else {
+            metadata.len()
+        };
+        let mtime = metadata.mtime();
         let known = known
             .get(&path)
             .filter(|(m, s, _)| (*m, *s) == (mtime, size))
@@ -140,6 +156,7 @@ fn run(
             mtime,
             kind,
             format,
+            content_type,
             meta: known.meta,
             failed: known.failed,
         });

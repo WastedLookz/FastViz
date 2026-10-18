@@ -123,6 +123,16 @@ pub fn thumb(conn: &Connection, key: &Key, tier: u32) -> rusqlite::Result<Option
     })
 }
 
+/// Whether a thumbnail at or above `tier` (or a native-size one) is cached.
+pub fn has_thumb(conn: &Connection, key: &Key, tier: u32) -> bool {
+    conn.prepare_cached(
+        "SELECT 1 FROM thumb WHERE path = ?1 AND mtime = ?2 AND size = ?3
+         AND (tier >= ?4 OR native) LIMIT 1",
+    )
+    .and_then(|mut stmt| stmt.exists(params![key.path_bytes(), key.mtime, key.size as i64, tier]))
+    .unwrap_or(false)
+}
+
 /// What the cache knows about a file without opening it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Known {

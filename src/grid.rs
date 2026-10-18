@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
-use gtk::{gdk, glib, graphene, gsk};
+use gtk::{gdk, gio, glib, graphene, gsk};
 
 use crate::loader::Thumbnailer;
 use crate::media::Kind;
@@ -38,6 +38,7 @@ impl Grid {
     ) -> Self {
         let current = Rc::new(Cell::new(size.value().round() as i32));
         let tiles: Rc<RefCell<Vec<glib::WeakRef<Tile>>>> = Rc::default();
+        let selection = model.clone().upcast::<gtk::SelectionModel>();
 
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(glib::clone!(
@@ -47,11 +48,14 @@ impl Grid {
             tiles,
             #[weak]
             thumbnailer,
+            #[weak]
+            selection,
             move |_, item| {
                 let item = item
                     .downcast_ref::<gtk::ListItem>()
                     .expect("grid list item");
                 let tile = Tile::new(current.get());
+                tile.add_controller(drag_source(item, &selection));
                 tiles.borrow_mut().push(tile.downgrade());
                 // Positions are only known once GTK maps a tile on screen.
                 tile.connect_map(glib::clone!(
@@ -198,6 +202,53 @@ fn fit_columns(view: &gtk::GridView, width: f64, size: i32) {
     }
 }
 
+/// Dragging a tile hands the files to other apps, as a file manager does:
+/// the whole selection if the tile is part of it, otherwise just that file.
+fn drag_source(list_item: &gtk::ListItem, selection: &gtk::SelectionModel) -> gtk::DragSource {
+    let source = gtk::DragSource::builder()
+        .actions(gdk::DragAction::COPY)
+        .build();
+    source.connect_prepare(glib::clone!(
+        #[weak]
+        list_item,
+        #[weak]
+        selection,
+        #[upgrade_or]
+        None,
+        move |source, _x, _y| {
+            let item = list_item.item().and_downcast::<FileItem>()?;
+            let paths: Vec<gio::File> = if selection.is_selected(list_item.position()) {
+                selected(&selection)
+                    .map(|i| gio::File::for_path(&i.entry().path))
+                    .collect()
+            } else {
+                vec![gio::File::for_path(&item.entry().path)]
+            };
+            if let Some(texture) = item.texture() {
+                source.set_icon(Some(&texture), texture.width() / 2, texture.height() / 2);
+            } else if let Some(tile) = list_item.child() {
+                let paintable = gtk::WidgetPaintable::new(Some(&tile));
+                source.set_icon(Some(&paintable), tile.width() / 2, tile.height() / 2);
+            }
+            let files = gdk::FileList::from_array(&paths);
+            Some(gdk::ContentProvider::for_value(&files.to_value()))
+        }
+    ));
+    source
+}
+
+/// The selected items, in grid order.
+pub fn selected(selection: &gtk::SelectionModel) -> impl Iterator<Item = FileItem> + '_ {
+    let set = selection.selection();
+    let positions: Vec<u32> = match gtk::BitsetIter::init_first(&set) {
+        Some((iter, first)) => std::iter::once(first).chain(iter).collect(),
+        None => Vec::new(),
+    };
+    positions
+        .into_iter()
+        .filter_map(|p| selection.item(p).and_downcast::<FileItem>())
+}
+
 mod tile_imp {
     use std::cell::OnceCell;
 
@@ -207,7 +258,6 @@ mod tile_imp {
     pub struct Tile {
         pub thumb: OnceCell<super::Thumb>,
         pub label: OnceCell<gtk::Label>,
-        pub badge: OnceCell<gtk::Image>,
     }
 
     #[glib::object_subclass]
@@ -226,21 +276,7 @@ mod tile_imp {
             tile.add_css_class("fv-tile");
 
             let thumb = super::Thumb::default();
-            let badge = gtk::Image::builder()
-                .icon_name("media-playback-start-symbolic")
-                .pixel_size(12)
-                .halign(gtk::Align::End)
-                .valign(gtk::Align::End)
-                .margin_end(6)
-                .margin_bottom(6)
-                .css_classes(["fv-badge"])
-                .visible(false)
-                .build();
-            let overlay = gtk::Overlay::builder()
-                .child(&thumb)
-                .halign(gtk::Align::Center)
-                .build();
-            overlay.add_overlay(&badge);
+            thumb.set_halign(gtk::Align::Center);
             // A one-char max width keeps long names from widening the column;
             // the label still fills the tile and ellipsizes.
             let label = gtk::Label::builder()
@@ -248,12 +284,11 @@ mod tile_imp {
                 .max_width_chars(1)
                 .hexpand(true)
                 .build();
-            tile.append(&overlay);
+            tile.append(&thumb);
             tile.append(&label);
 
             let _ = self.thumb.set(thumb);
             let _ = self.label.set(label);
-            let _ = self.badge.set(badge);
         }
     }
 
@@ -283,14 +318,19 @@ impl Tile {
     }
 
     fn bind(&self, file: &FileItem) {
-        let imp = self.imp();
         let entry = file.entry();
-        if let Some(label) = imp.label.get() {
+        if let Some(label) = self.imp().label.get() {
             label.set_text(&entry.name);
         }
-        if let Some(badge) = imp.badge.get() {
-            badge.set_visible(entry.kind == Kind::Video);
-        }
+        let thumb = self.thumb();
+        thumb.set_video(entry.kind == Kind::Video);
+        let icon = match (entry.kind, entry.content_type.as_deref()) {
+            (Kind::Folder, _) => Some(gio::ThemedIcon::new("folder").upcast()),
+            (Kind::Other, Some(content_type)) => Some(gio::content_type_get_icon(content_type)),
+            (Kind::Other, None) => Some(gio::ThemedIcon::new("text-x-generic").upcast()),
+            _ => None,
+        };
+        thumb.set_icon(icon);
     }
 }
 
@@ -308,6 +348,12 @@ mod thumb_imp {
         native: Cell<bool>,
         #[property(get, set)]
         failed: Cell<bool>,
+        /// Folders and other files show their type's icon instead.
+        #[property(get, set, nullable)]
+        icon: RefCell<Option<gio::Icon>>,
+        /// Draw a play badge.
+        #[property(get, set)]
+        video: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -335,6 +381,7 @@ mod thumb_imp {
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             let widget = self.obj();
             let (width, height) = (widget.width() as f32, widget.height() as f32);
+            let bounds = graphene::Rect::new(0.0, 0.0, width, height);
 
             if let Some(texture) = self.texture.borrow().as_ref() {
                 let (tw, th) = (texture.width() as f32, texture.height() as f32);
@@ -348,11 +395,18 @@ mod thumb_imp {
                 // Trilinear uses mipmaps, so any downscale stays smooth.
                 snapshot.append_scaled_texture(texture, gsk::ScalingFilter::Trilinear, &rect);
                 snapshot.pop();
+                if self.video.get() {
+                    draw_play_badge(&widget, snapshot, &rect);
+                }
                 return;
             }
 
-            // Neutral placeholder while loading, and for videos (until Stage 5).
-            let bounds = graphene::Rect::new(0.0, 0.0, width, height);
+            if let Some(icon) = self.icon.borrow().as_ref() {
+                draw_icon(&widget, snapshot, icon, width.min(height) * 0.7, &bounds);
+                return;
+            }
+
+            // Neutral placeholder while loading.
             let failed = self.failed.get();
             let mut color = widget.color();
             color.set_alpha(if failed { 0.03 } else { 0.06 });
@@ -362,7 +416,71 @@ mod thumb_imp {
             if failed {
                 draw_missing_icon(&widget, snapshot, width, height);
             }
+            if self.video.get() {
+                draw_play_badge(&widget, snapshot, &bounds);
+            }
         }
+    }
+
+    /// A full-color themed icon, centered in `area`.
+    fn draw_icon(
+        widget: &super::Thumb,
+        snapshot: &gtk::Snapshot,
+        icon: &gio::Icon,
+        size: f32,
+        area: &graphene::Rect,
+    ) {
+        let paintable = gtk::IconTheme::for_display(&widget.display()).lookup_by_gicon(
+            icon,
+            size as i32,
+            widget.scale_factor(),
+            widget.direction(),
+            gtk::IconLookupFlags::empty(),
+        );
+        snapshot.save();
+        snapshot.translate(&graphene::Point::new(
+            area.x() + (area.width() - size) / 2.0,
+            area.y() + (area.height() - size) / 2.0,
+        ));
+        paintable.snapshot(snapshot, size.into(), size.into());
+        snapshot.restore();
+    }
+
+    /// A small dark circle with a play triangle, in `rect`'s bottom-right corner.
+    fn draw_play_badge(widget: &super::Thumb, snapshot: &gtk::Snapshot, rect: &graphene::Rect) {
+        let diameter = (rect.width().min(rect.height()) * 0.18).clamp(16.0, 28.0);
+        let margin = 6.0_f32.min(rect.width() / 10.0);
+        let circle = graphene::Rect::new(
+            rect.x() + rect.width() - diameter - margin,
+            rect.y() + rect.height() - diameter - margin,
+            diameter,
+            diameter,
+        );
+        snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(circle, diameter / 2.0));
+        snapshot.append_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.6), &circle);
+        snapshot.pop();
+
+        let icon_size = diameter * 0.55;
+        let icon = gtk::IconTheme::for_display(&widget.display()).lookup_icon(
+            "media-playback-start-symbolic",
+            &[],
+            icon_size as i32,
+            widget.scale_factor(),
+            widget.direction(),
+            gtk::IconLookupFlags::empty(),
+        );
+        snapshot.save();
+        snapshot.translate(&graphene::Point::new(
+            circle.x() + (diameter - icon_size) / 2.0,
+            circle.y() + (diameter - icon_size) / 2.0,
+        ));
+        icon.snapshot_symbolic(
+            snapshot,
+            icon_size.into(),
+            icon_size.into(),
+            &[gdk::RGBA::WHITE],
+        );
+        snapshot.restore();
     }
 
     /// A dim "broken image" icon for files that can't be decoded.

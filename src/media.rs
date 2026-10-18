@@ -1,9 +1,21 @@
 //! Recognizing media files by extension.
 
+use std::collections::HashSet;
+use std::sync::Mutex;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    Folder,
     Image,
     Video,
+    /// Any other file: listed with its type's icon, not previewed.
+    Other,
+}
+
+impl Kind {
+    pub fn is_media(self) -> bool {
+        matches!(self, Self::Image | Self::Video)
+    }
 }
 
 /// Facts about an image that need its contents, filled in lazily.
@@ -30,6 +42,30 @@ pub fn format_label(name: &str) -> &'static str {
         .copied()
         .find(|f| *f == name)
         .unwrap_or("Unknown")
+}
+
+/// The label for a non-media file: its extension in capitals ("PDF"), or "File".
+/// Labels are interned; there are only ever a few dozen distinct extensions.
+pub fn other_label(name: &str) -> &'static str {
+    static LABELS: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let ext = match name.rsplit_once('.') {
+        Some((stem, ext))
+            if !stem.is_empty()
+                && (1..=8).contains(&ext.len())
+                && ext.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+        {
+            ext.to_ascii_uppercase()
+        }
+        _ => return "File",
+    };
+    let mut labels = LABELS.lock().unwrap_or_else(|e| e.into_inner());
+    let labels = labels.get_or_insert_with(HashSet::new);
+    if let Some(&label) = labels.get(ext.as_str()) {
+        return label;
+    }
+    let label: &'static str = Box::leak(ext.into_boxed_str());
+    labels.insert(label);
+    label
 }
 
 /// Classifies a file name by its extension, returning its kind and a short format label.
@@ -82,5 +118,15 @@ mod tests {
         assert_eq!(classify("notes.txt"), None);
         assert_eq!(classify("noextension"), None);
         assert_eq!(classify("weird.jpegxl"), None);
+    }
+
+    #[test]
+    fn other_labels() {
+        use super::other_label;
+        assert_eq!(other_label("report.pdf"), "PDF");
+        assert_eq!(other_label("archive.tar.gz"), "GZ");
+        assert_eq!(other_label("README"), "File");
+        assert_eq!(other_label(".bashrc"), "File");
+        assert!(std::ptr::eq(other_label("a.zip"), other_label("b.ZIP")));
     }
 }

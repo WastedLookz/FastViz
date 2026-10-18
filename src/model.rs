@@ -11,7 +11,7 @@ use gtk::{gdk, glib};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::Key;
-use crate::media::Meta;
+use crate::media::{Kind, Meta};
 use crate::natsort;
 use crate::scan::Entry;
 
@@ -93,6 +93,12 @@ pub fn sorter(state: Rc<Cell<(SortKey, bool)>>) -> gtk::CustomSorter {
         else {
             return gtk::Ordering::Equal;
         };
+        // Folders come first in either direction, like a file manager.
+        let folder = |item: &FileItem| item.entry().kind == Kind::Folder;
+        let folders_first = folder(b).cmp(&folder(a));
+        if folders_first != Ordering::Equal {
+            return folders_first.into();
+        }
         let ord = compare(a, b, key);
         if descending { ord.reverse() } else { ord }.into()
     })

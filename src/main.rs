@@ -14,6 +14,7 @@ mod storage;
 mod trace;
 mod tree;
 mod turbojpeg;
+mod video;
 mod window;
 
 use adw::prelude::*;
@@ -31,6 +32,7 @@ fn main() -> glib::ExitCode {
         app.set_accels_for_action("win.show-pane", &["F9"]);
         app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
         app.set_accels_for_action("win.preferences", &["<Control>comma"]);
+        app.set_accels_for_action("win.go-up", &["BackSpace", "<Alt>Up"]);
     });
     app.connect_activate(|app| {
         // A second launch just raises the existing window.
