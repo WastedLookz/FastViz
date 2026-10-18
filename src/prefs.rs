@@ -22,6 +22,8 @@ pub fn present(
     window: &adw::ApplicationWindow,
     startup: &Rc<RefCell<Startup>>,
     current: Option<PathBuf>,
+    black: bool,
+    on_black: impl Fn(bool) + 'static,
 ) {
     let state = startup.borrow();
     let folder_row = adw::ActionRow::builder()
@@ -109,8 +111,18 @@ pub fn present(
     let group = adw::PreferencesGroup::builder().title("Startup").build();
     group.add(&folder_row);
     group.add(&open_last);
+    let black_row = adw::SwitchRow::builder()
+        .title("Black Background")
+        .subtitle("Instead of 50% gray; B switches it while viewing")
+        .active(black)
+        .build();
+    black_row.connect_active_notify(move |row| on_black(row.is_active()));
+    let viewer_group = adw::PreferencesGroup::builder().title("Fullscreen").build();
+    viewer_group.add(&black_row);
+
     let page = adw::PreferencesPage::new();
     page.add(&group);
+    page.add(&viewer_group);
     let dialog = adw::PreferencesDialog::new();
     dialog.add(&page);
     dialog.present(Some(window));

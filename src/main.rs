@@ -16,6 +16,7 @@ mod trace;
 mod tree;
 mod turbojpeg;
 mod video;
+mod viewer;
 mod window;
 
 use adw::prelude::*;

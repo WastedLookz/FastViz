@@ -90,6 +90,8 @@ struct Queue {
     /// The folder's items to make sure are cached, nearest to the view first.
     background: VecDeque<Pending>,
     background_tier: u32,
+    /// The fullscreen viewer is open: leave the drive to it.
+    background_paused: bool,
     /// Holds back drive reads while a folder scan runs: they would compete for
     /// the same disk, and later batches can re-sort what's on screen.
     source_paused: bool,
@@ -139,6 +141,7 @@ impl Queue {
     /// Whether the drive can take another background item.
     fn background_ready(&self) -> bool {
         !self.source_paused
+            && !self.background_paused
             && !self.background.is_empty()
             && self.wants.values().filter(|w| w.job.background).count() < BACKGROUND_IN_FLIGHT
     }
@@ -561,6 +564,26 @@ fn record(total: &AtomicU64, since: Instant) {
     total.fetch_add(since.elapsed().as_micros() as u64, Ordering::Relaxed);
 }
 
+/// Wraps decoded pixels in a GPU-uploadable texture (no copy), and its size in bytes.
+pub fn texture_from(pixels: Pixels) -> (gdk::Texture, usize) {
+    let (width, height) = pixels.dimensions();
+    let (format, channels) = if pixels.has_alpha() {
+        (gdk::MemoryFormat::R8g8b8a8, 4)
+    } else {
+        (gdk::MemoryFormat::R8g8b8, 3)
+    };
+    let bytes = glib::Bytes::from_owned(pixels.into_raw());
+    let size = bytes.len();
+    let texture = gdk::MemoryTexture::new(
+        width as i32,
+        height as i32,
+        format,
+        &bytes,
+        width as usize * channels,
+    );
+    (texture.upcast(), size)
+}
+
 /// Least-recently-used accounting for thumbnail textures.
 struct Lru {
     clock: u64,
@@ -789,6 +812,14 @@ impl Thumbnailer {
         let mut map = self.items.borrow_mut();
         for item in items {
             map.insert(item.id(), item.downgrade());
+        }
+    }
+
+    /// Pauses background caching (while the fullscreen viewer reads the drive).
+    pub fn pause_background(&self, paused: bool) {
+        self.shared.lock().background_paused = paused;
+        if !paused {
+            self.shared.cache_ready.notify_all();
         }
     }
 
@@ -1128,22 +1159,8 @@ impl Thumbnailer {
                 {
                     return;
                 }
-                let (width, height) = pixels.dimensions();
-                let (format, channels) = if pixels.has_alpha() {
-                    (gdk::MemoryFormat::R8g8b8a8, 4)
-                } else {
-                    (gdk::MemoryFormat::R8g8b8, 3)
-                };
-                let bytes = glib::Bytes::from_owned(pixels.into_raw());
-                let size = bytes.len();
-                let texture = gdk::MemoryTexture::new(
-                    width as i32,
-                    height as i32,
-                    format,
-                    &bytes,
-                    width as usize * channels,
-                );
-                item.set_thumbnail(Some(texture.upcast()), tier, native);
+                let (texture, size) = texture_from(pixels);
+                item.set_thumbnail(Some(texture), tier, native);
                 self.track(id, size);
             }
             Event::Failed { id, meta } => {

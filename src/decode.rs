@@ -237,15 +237,7 @@ fn jpeg_thumbnail(data: &[u8], tier: u32, codec: &mut Codec) -> Result<Thumbnail
 }
 
 fn generic_thumbnail(data: &[u8], tier: u32, format: &'static str) -> Result<Thumbnail, String> {
-    let image_format = match format {
-        "PNG" => ImageFormat::Png,
-        "GIF" => ImageFormat::Gif,
-        "WebP" => ImageFormat::WebP,
-        "BMP" => ImageFormat::Bmp,
-        "TIFF" => ImageFormat::Tiff,
-        other => return Err(format!("{other} is not supported")),
-    };
-    let image = decode_image(data, image_format)?;
+    let image = decode_image(data, image_format(format)?)?;
     let exif = read_exif(data);
     let orientation = exif.as_ref().map_or(1, orientation);
     let native = image.width().max(image.height()) <= tier;
@@ -281,8 +273,28 @@ fn heif_thumbnail(
         .filter(|t| t.width().max(t.height()) >= tier)
         .min_by_key(|t| t.width().max(t.height()));
     let source = embedded.as_ref().unwrap_or(&handle);
+    let image = heif_decode(source, codec)?;
 
-    let alpha = source.has_alpha_channel();
+    let native = embedded.is_none() && width.max(height) <= tier;
+    // libheif already applied the container's rotation and mirroring.
+    Ok(Thumbnail {
+        pixels: Pixels::from_image(fit(image, tier)),
+        meta: Meta {
+            width,
+            height,
+            taken: heif_exif(&handle).as_ref().and_then(taken),
+            format,
+        },
+        native,
+    })
+}
+
+/// Decodes a HEIF image (rotation and mirroring applied) to 8-bit RGB(A).
+fn heif_decode(
+    handle: &libheif_rs::ImageHandle,
+    codec: &mut Codec,
+) -> Result<DynamicImage, String> {
+    let alpha = handle.has_alpha_channel();
     let chroma = if alpha {
         RgbChroma::Rgba
     } else {
@@ -290,7 +302,7 @@ fn heif_thumbnail(
     };
     let decoded = codec
         .heif
-        .decode(source, ColorSpace::Rgb(chroma), None)
+        .decode(handle, ColorSpace::Rgb(chroma), None)
         .map_err(|e| e.to_string())?;
     let plane = decoded
         .planes()
@@ -308,25 +320,133 @@ fn heif_thumbnail(
     for row in plane.data.chunks(plane.stride).take(plane.height as usize) {
         pixels.extend_from_slice(row.get(..row_len).ok_or("short HEIF row")?);
     }
-    let image = if alpha {
+    if alpha {
         RgbaImage::from_raw(plane.width, plane.height, pixels).map(DynamicImage::ImageRgba8)
     } else {
         RgbImage::from_raw(plane.width, plane.height, pixels).map(DynamicImage::ImageRgb8)
     }
-    .ok_or_else(|| "bad HEIF buffer".to_owned())?;
+    .ok_or_else(|| "bad HEIF buffer".to_owned())
+}
 
-    let native = embedded.is_none() && width.max(height) <= tier;
-    // libheif already applied the container's rotation and mirroring.
-    Ok(Thumbnail {
-        pixels: Pixels::from_image(fit(image, tier)),
-        meta: Meta {
-            width,
-            height,
-            taken: heif_exif(&handle).as_ref().and_then(taken),
-            format,
-        },
-        native,
+/// A decoded image for the fullscreen viewer.
+pub struct Display {
+    pub pixels: Pixels,
+    /// The whole image's size as displayed; `pixels` may be a smaller preview.
+    pub width: u32,
+    pub height: u32,
+    /// `pixels` are the image at full resolution.
+    pub full: bool,
+}
+
+/// Decodes for the fullscreen viewer. Given the screen size (device pixels)
+/// it may return a cheaper preview that still covers the image's fit size on
+/// screen; without it, the full resolution.
+pub fn display(
+    data: &[u8],
+    screen: Option<(u32, u32)>,
+    codec: &mut Codec,
+) -> Result<Display, String> {
+    match sniff(data) {
+        Some("JPEG") => jpeg_display(data, screen, codec),
+        Some("HEIF" | "AVIF") => {
+            let context = HeifContext::read_from_bytes(data).map_err(|e| e.to_string())?;
+            let handle = context.primary_image_handle().map_err(|e| e.to_string())?;
+            Ok(finish_display(heif_decode(&handle, codec)?, screen))
+        }
+        Some("JPEG XL") => Err("JPEG XL is not supported yet".to_owned()),
+        Some(format) => {
+            let image = decode_image(data, image_format(format)?)?;
+            let orientation = read_exif(data).as_ref().map_or(1, orientation);
+            Ok(finish_display(orient(image, orientation), screen))
+        }
+        None => Err("unrecognized file format".to_owned()),
+    }
+}
+
+fn jpeg_display(
+    data: &[u8],
+    screen: Option<(u32, u32)>,
+    codec: &mut Codec,
+) -> Result<Display, String> {
+    let orientation = read_exif(data).as_ref().map_or(1, orientation);
+    let decoder = codec.jpeg()?;
+    let Ok(header) = decoder.header(data) else {
+        let image = orient(decode_image(data, ImageFormat::Jpeg)?, orientation);
+        return Ok(finish_display(image, None));
+    };
+    let (width, height) = oriented(header.width, header.height, orientation);
+    // DCT scaling makes a screen-sized decode of a 64 MP photo cheap.
+    let min_edge = screen.map_or(u32::MAX, |screen| preview_edge(width, height, screen));
+    let image = match decoder.decode_scaled(data, min_edge) {
+        Ok(rgb) => DynamicImage::ImageRgb8(rgb),
+        Err(_) => decode_image(data, ImageFormat::Jpeg)?,
+    };
+    let full = (image.width(), image.height()) == (header.width, header.height);
+    Ok(Display {
+        pixels: Pixels::from_image(orient(image, orientation)),
+        width,
+        height,
+        full,
     })
+}
+
+/// Downscales to the fit size on `screen` (if given and smaller).
+fn finish_display(image: DynamicImage, screen: Option<(u32, u32)>) -> Display {
+    let (width, height) = (image.width(), image.height());
+    let edge = screen.map_or(u32::MAX, |screen| preview_edge(width, height, screen));
+    let full = edge >= width.max(height);
+    let image = if full { image } else { fit(image, edge) };
+    Display {
+        pixels: Pixels::from_image(image),
+        width,
+        height,
+        full,
+    }
+}
+
+/// The longer edge the image has when shrunk to fit `screen` (never enlarged).
+fn preview_edge(width: u32, height: u32, screen: (u32, u32)) -> u32 {
+    let fit = (f64::from(screen.0) / f64::from(width))
+        .min(f64::from(screen.1) / f64::from(height))
+        .min(1.0);
+    (f64::from(width.max(height)) * fit).ceil() as u32
+}
+
+/// Frames of an animated GIF, composited, with their delays in milliseconds.
+/// `None` for stills, and for animations over 512 MB decoded.
+pub fn animation(data: &[u8]) -> Option<Vec<(RgbaImage, u32)>> {
+    use image::AnimationDecoder;
+    if sniff(data) != Some("GIF") {
+        return None;
+    }
+    let decoder = image::codecs::gif::GifDecoder::new(Cursor::new(data)).ok()?;
+    let mut frames = Vec::new();
+    let mut bytes = 0usize;
+    for frame in decoder.into_frames() {
+        let frame = frame.ok()?;
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        let delay = numerator.checked_div(denominator).unwrap_or(0);
+        // Browsers treat near-zero delays as 100 ms; so do we.
+        let delay = if delay < 20 { 100 } else { delay };
+        let buffer = frame.into_buffer();
+        bytes += buffer.len();
+        if bytes > 512 << 20 {
+            return None;
+        }
+        frames.push((buffer, delay));
+    }
+    (frames.len() > 1).then_some(frames)
+}
+
+fn image_format(format: &str) -> Result<ImageFormat, String> {
+    match format {
+        "PNG" => Ok(ImageFormat::Png),
+        "GIF" => Ok(ImageFormat::Gif),
+        "WebP" => Ok(ImageFormat::WebP),
+        "BMP" => Ok(ImageFormat::Bmp),
+        "TIFF" => Ok(ImageFormat::Tiff),
+        other => Err(format!("{other} is not supported")),
+    }
 }
 
 fn heif_exif(handle: &libheif_rs::ImageHandle) -> Option<exif::Exif> {
@@ -552,6 +672,24 @@ mod tests {
         assert_eq!(oriented(4000, 3000, 3), (4000, 3000));
         let image = DynamicImage::ImageRgb8(RgbImage::new(4, 2));
         assert_eq!(orient(image, 6).width(), 2);
+    }
+
+    #[test]
+    fn display_previews_cover_the_screen() {
+        let mut codec = Codec::new();
+        let big = DynamicImage::ImageRgb8(RgbImage::new(4000, 2000));
+        let shown = display(&png_bytes(&big), Some((1920, 1080)), &mut codec).unwrap();
+        assert_eq!((shown.width, shown.height), (4000, 2000));
+        assert_eq!(shown.pixels.dimensions(), (1920, 960));
+        assert!(!shown.full);
+        let full = display(&png_bytes(&big), None, &mut codec).unwrap();
+        assert!(full.full && full.pixels.dimensions() == (4000, 2000));
+        let small = DynamicImage::ImageRgb8(RgbImage::new(300, 200));
+        assert!(
+            display(&png_bytes(&small), Some((1920, 1080)), &mut codec)
+                .unwrap()
+                .full
+        );
     }
 
     #[test]

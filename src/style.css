@@ -105,3 +105,10 @@
 .fv-crumb-separator {
   margin: 0 2px;
 }
+
+.fv-info {
+  background-color: alpha(black, 0.6);
+  color: white;
+  border-radius: 8px;
+  padding: 8px 12px;
+}

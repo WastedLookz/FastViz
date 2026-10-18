@@ -371,6 +371,13 @@ impl Window {
         dialog.present(Some(&self.window));
     }
 
+    /// Moves files to the Trash (with Undo), e.g. from the fullscreen viewer.
+    pub(super) fn trash(self: &Rc<Self>, paths: Vec<PathBuf>) {
+        if !paths.is_empty() {
+            self.run(Op::Trash(paths), Job::Trash);
+        }
+    }
+
     /// Runs a file operation, showing progress and updating the grid in place.
     fn run(self: &Rc<Self>, op: Op, job: Job) {
         let verb = op.verb();

@@ -19,8 +19,10 @@ use crate::settings::Settings;
 use crate::storage;
 use crate::trace;
 use crate::tree::FolderTree;
+use crate::viewer::Viewer;
 
 mod files;
+mod fullscreen;
 
 pub struct Window {
     window: adw::ApplicationWindow,
@@ -57,6 +59,10 @@ pub struct Window {
     toasts: adw::ToastOverlay,
     /// What we last put on the clipboard: (paths, cut).
     clipboard: RefCell<Option<(Vec<PathBuf>, bool)>>,
+    /// The browser and the fullscreen viewer.
+    pages: gtk::Stack,
+    viewer: Rc<Viewer>,
+    viewer_black: Rc<Cell<bool>>,
 }
 
 impl Window {
@@ -163,11 +169,16 @@ impl Window {
         header.pack_end(&menu_button);
         header.pack_end(&sort_button);
 
-        let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&content));
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
-        view.set_content(Some(&toasts));
+        view.set_content(Some(&content));
+        let viewer = Viewer::new(settings.viewer_black);
+        let pages = gtk::Stack::new();
+        pages.add_named(&view, Some("browser"));
+        pages.add_named(&viewer.widget, Some("viewer"));
+        // Toasts (like Trash with Undo) show over both pages.
+        let toasts = adw::ToastOverlay::new();
+        toasts.set_child(Some(&pages));
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -175,7 +186,7 @@ impl Window {
             .default_width(settings.window_width)
             .default_height(settings.window_height)
             .maximized(settings.maximized)
-            .content(&view)
+            .content(&toasts)
             .build();
 
         let this = Rc::new(Self {
@@ -211,9 +222,13 @@ impl Window {
             content,
             toasts,
             clipboard: RefCell::default(),
+            pages,
+            viewer,
+            viewer_black: Rc::new(Cell::new(settings.viewer_black)),
         });
         this.setup_actions(&settings);
         this.setup_file_actions();
+        this.setup_viewer();
         this.connect_signals();
         this.update_sort_button();
 
@@ -329,6 +344,12 @@ impl Window {
                     &this.window,
                     &this.startup_folder,
                     this.current.borrow().clone(),
+                    this.viewer_black.get(),
+                    glib::clone!(
+                        #[weak]
+                        this,
+                        move |black| this.set_viewer_black(black)
+                    ),
                 )
             }
         ));
@@ -383,7 +404,7 @@ impl Window {
                             |_| {},
                         );
                     }
-                    Kind::Image | Kind::Video => {}
+                    Kind::Image | Kind::Video => this.open_viewer(position),
                 }
             }
         ));
@@ -735,6 +756,7 @@ impl Window {
             sort_key,
             sort_desc,
             thumb_size: self.size.value().round() as i32,
+            viewer_black: self.viewer_black.get(),
             expanded: self.tree.expanded_rows(),
         }
         .save();
