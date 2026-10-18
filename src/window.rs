@@ -20,6 +20,8 @@ use crate::storage;
 use crate::trace;
 use crate::tree::FolderTree;
 
+mod files;
+
 pub struct Window {
     window: adw::ApplicationWindow,
     paned: gtk::Paned,
@@ -50,6 +52,11 @@ pub struct Window {
     startup: Cell<bool>,
     /// A live re-sort is scheduled (metadata arriving while sorting by it).
     resort_queued: Cell<bool>,
+    /// Holds the paned and status bar; context menus are parented here.
+    content: gtk::Box,
+    toasts: adw::ToastOverlay,
+    /// What we last put on the clipboard: (paths, cut).
+    clipboard: RefCell<Option<(Vec<PathBuf>, bool)>>,
 }
 
 impl Window {
@@ -156,9 +163,11 @@ impl Window {
         header.pack_end(&menu_button);
         header.pack_end(&sort_button);
 
+        let toasts = adw::ToastOverlay::new();
+        toasts.set_child(Some(&content));
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
-        view.set_content(Some(&content));
+        view.set_content(Some(&toasts));
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -199,8 +208,12 @@ impl Window {
             scanning: Cell::new(false),
             startup: Cell::new(true),
             resort_queued: Cell::new(false),
+            content,
+            toasts,
+            clipboard: RefCell::default(),
         });
         this.setup_actions(&settings);
+        this.setup_file_actions();
         this.connect_signals();
         this.update_sort_button();
 

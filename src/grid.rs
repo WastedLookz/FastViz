@@ -20,6 +20,9 @@ const ZOOM_STEP: f64 = 1.1;
 /// Horizontal padding around each tile; must match `.fv-grid > child` in style.css.
 const TILE_PADDING: i32 = 12;
 
+/// Called on right-click with the widget clicked and the point in it.
+type ContextHandler = Box<dyn Fn(&gtk::Widget, f64, f64)>;
+
 pub struct Grid {
     pub view: gtk::GridView,
     pub scroller: gtk::ScrolledWindow,
@@ -27,6 +30,7 @@ pub struct Grid {
     size: Rc<Cell<i32>>,
     width: Rc<Cell<f64>>,
     thumbnailer: Rc<Thumbnailer>,
+    context: Rc<RefCell<Option<ContextHandler>>>,
 }
 
 impl Grid {
@@ -39,6 +43,7 @@ impl Grid {
         let current = Rc::new(Cell::new(size.value().round() as i32));
         let tiles: Rc<RefCell<Vec<glib::WeakRef<Tile>>>> = Rc::default();
         let selection = model.clone().upcast::<gtk::SelectionModel>();
+        let context: Rc<RefCell<Option<ContextHandler>>> = Rc::default();
 
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(glib::clone!(
@@ -50,12 +55,15 @@ impl Grid {
             thumbnailer,
             #[weak]
             selection,
+            #[strong]
+            context,
             move |_, item| {
                 let item = item
                     .downcast_ref::<gtk::ListItem>()
                     .expect("grid list item");
                 let tile = Tile::new(current.get());
                 tile.add_controller(drag_source(item, &selection));
+                tile.add_controller(context_click(item, &selection, &context));
                 tiles.borrow_mut().push(tile.downgrade());
                 // Positions are only known once GTK maps a tile on screen.
                 tile.connect_map(glib::clone!(
@@ -138,6 +146,24 @@ impl Grid {
             }
         ));
         scroller.add_controller(zoom);
+
+        // Right-click on empty space: clear the selection, offer Paste.
+        let background_click = gtk::GestureClick::builder()
+            .button(gdk::BUTTON_SECONDARY)
+            .build();
+        background_click.connect_pressed(glib::clone!(
+            #[weak]
+            selection,
+            #[strong]
+            context,
+            move |gesture, _, x, y| {
+                selection.unselect_all();
+                if let (Some(f), Some(widget)) = (context.borrow().as_ref(), gesture.widget()) {
+                    f(&widget, x, y);
+                }
+            }
+        ));
+        view.add_controller(background_click);
         thumbnailer.set_viewport(&scroller);
         thumbnailer.set_size(current.get());
         scroller.vadjustment().connect_value_changed(glib::clone!(
@@ -174,7 +200,12 @@ impl Grid {
             size: current,
             width,
             thumbnailer: thumbnailer.clone(),
+            context,
         }
+    }
+
+    pub fn connect_context_menu(&self, f: impl Fn(&gtk::Widget, f64, f64) + 'static) {
+        self.context.replace(Some(Box::new(f)));
     }
 
     /// Resizes every live tile; the grid relayouts on the next frame.
@@ -235,6 +266,37 @@ fn drag_source(list_item: &gtk::ListItem, selection: &gtk::SelectionModel) -> gt
         }
     ));
     source
+}
+
+/// Right-click on a tile: select it (unless it is part of the selection),
+/// then ask for the context menu.
+fn context_click(
+    list_item: &gtk::ListItem,
+    selection: &gtk::SelectionModel,
+    context: &Rc<RefCell<Option<ContextHandler>>>,
+) -> gtk::GestureClick {
+    let click = gtk::GestureClick::builder()
+        .button(gdk::BUTTON_SECONDARY)
+        .build();
+    click.connect_pressed(glib::clone!(
+        #[weak]
+        list_item,
+        #[weak]
+        selection,
+        #[strong]
+        context,
+        move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let position = list_item.position();
+            if !selection.is_selected(position) {
+                selection.select_item(position, true);
+            }
+            if let (Some(f), Some(widget)) = (context.borrow().as_ref(), gesture.widget()) {
+                f(&widget, x, y);
+            }
+        }
+    ));
+    click
 }
 
 /// The selected items, in grid order.

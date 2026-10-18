@@ -209,7 +209,10 @@ fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
         .expect("failed to spawn thumbnail thread");
 }
 
-fn start_workers(shared: &Arc<Shared>, events: async_channel::Sender<Event>) {
+fn start_workers(
+    shared: &Arc<Shared>,
+    events: async_channel::Sender<Event>,
+) -> mpsc::Sender<cache::Write> {
     let writer = cache::spawn_writer();
     let decoders = std::thread::available_parallelism().map_or(4, |n| n.get().clamp(2, 8));
     let (decode_tx, decode_rx) = async_channel::bounded::<DecodeJob>(decoders * 2);
@@ -240,6 +243,7 @@ fn start_workers(shared: &Arc<Shared>, events: async_channel::Sender<Event>) {
             decoder(&shared, &events, &writer, &decode_rx)
         });
     }
+    writer
 }
 
 enum CacheWork {
@@ -633,6 +637,7 @@ type BoundTile = (glib::WeakRef<Tile>, glib::WeakRef<gtk::ListItem>);
 pub struct Thumbnailer {
     me: std::rc::Weak<Self>,
     shared: Arc<Shared>,
+    writer: mpsc::Sender<cache::Write>,
     items: RefCell<HashMap<u64, glib::WeakRef<FileItem>>>,
     /// Tiles showing each item, with their list item (for its position).
     bound: RefCell<HashMap<u64, BoundTile>>,
@@ -666,13 +671,14 @@ impl Thumbnailer {
             stats: Stats::default(),
         });
         let (events_tx, events) = async_channel::unbounded();
-        start_workers(&shared, events_tx);
+        let writer = start_workers(&shared, events_tx);
 
         let budget = texture_budget();
         trace!("thumbnail texture budget: {} MiB", budget >> 20);
         let this = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             shared,
+            writer,
             items: RefCell::default(),
             bound: RefCell::default(),
             viewport: RefCell::default(),
@@ -707,6 +713,14 @@ impl Thumbnailer {
             this.trace_throughput();
         }
         this
+    }
+
+    /// A file or folder was moved or renamed; its cached thumbnails follow it.
+    pub fn file_moved(&self, from: &std::path::Path, to: &std::path::Path) {
+        let _ = self.writer.send(cache::Write::Rename {
+            from: from.to_owned(),
+            to: to.to_owned(),
+        });
     }
 
     pub fn set_viewport(&self, scroller: &gtk::ScrolledWindow) {

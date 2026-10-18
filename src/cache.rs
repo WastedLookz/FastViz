@@ -209,9 +209,37 @@ pub enum Write {
         meta: Option<Meta>,
         failed: bool,
     },
+    /// A file or folder moved: its rows (and those of anything inside) follow.
+    Rename { from: PathBuf, to: PathBuf },
 }
 
 /// Starts the single writer thread; send it rows to store.
+fn rename(conn: &Connection, from: &Path, to: &Path) -> rusqlite::Result<()> {
+    let (from, to) = (from.as_os_str().as_bytes(), to.as_os_str().as_bytes());
+    let mut low = from.to_vec();
+    low.push(b'/');
+    let mut high = from.to_vec();
+    high.push(b'0');
+    for table in ["thumb", "meta"] {
+        let mut paths: Vec<Vec<u8>> = vec![from.to_vec()];
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT DISTINCT path FROM {table} WHERE path >= ?1 AND path < ?2"
+        ))?;
+        for path in stmt.query_map(params![low, high], |row| row.get::<_, Vec<u8>>(0))? {
+            paths.push(path?);
+        }
+        let mut update = conn.prepare_cached(&format!(
+            "UPDATE OR REPLACE {table} SET path = ?2 WHERE path = ?1"
+        ))?;
+        for old in paths {
+            let mut new = to.to_vec();
+            new.extend_from_slice(&old[from.len()..]);
+            update.execute(params![old, new])?;
+        }
+    }
+    Ok(())
+}
+
 pub fn spawn_writer() -> mpsc::Sender<Write> {
     let (tx, rx) = mpsc::channel::<Write>();
     std::thread::Builder::new()
@@ -250,6 +278,7 @@ fn store(conn: &mut Connection, batch: Vec<Write>) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     for write in batch {
         match write {
+            Write::Rename { from, to } => rename(&tx, &from, &to)?,
             Write::Thumb {
                 key,
                 tier,

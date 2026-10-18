@@ -114,52 +114,17 @@ fn run(
         };
         let Ok(metadata) = metadata else { continue };
         let path = dirent.path();
-        let (kind, format) = if metadata.is_dir() {
-            (Kind::Folder, "Folder")
-        } else if !metadata.is_file() {
-            // Sockets, devices and such.
+        let Some(mut entry) = make_entry(path, name.into_owned(), &metadata) else {
             continue;
-        } else if let Some(media) = media::classify(&name) {
-            media
-        } else if let Some(sniffed) = (!name.contains('.')).then(|| sniff_file(&path)).flatten() {
-            sniffed
-        } else {
-            (Kind::Other, media::other_label(&name))
         };
-        let content_type = match kind {
-            Kind::Folder => Some("inode/directory".to_owned()),
-            Kind::Other => Some(
-                gtk::gio::content_type_guess(Some(&*name), None)
-                    .0
-                    .to_string(),
-            ),
-            _ => None,
-        };
-
-        let size = if kind == Kind::Folder {
-            0
-        } else {
-            metadata.len()
-        };
-        let mtime = metadata.mtime();
-        let known = known
-            .get(&path)
-            .filter(|(m, s, _)| (*m, *s) == (mtime, size))
-            .map(|(_, _, known)| *known)
-            .unwrap_or_default();
-        let name = name.into_owned();
-        batch.push(Entry {
-            path,
-            key: name.to_lowercase(),
-            name,
-            size,
-            mtime,
-            kind,
-            format,
-            content_type,
-            meta: known.meta,
-            failed: known.failed,
-        });
+        if let Some((_, _, known)) = known
+            .get(&entry.path)
+            .filter(|(m, s, _)| (*m, *s) == (entry.mtime, entry.size))
+        {
+            entry.meta = known.meta;
+            entry.failed = known.failed;
+        }
+        batch.push(entry);
 
         if batch.len() >= limit || last_flush.elapsed() >= FLUSH_INTERVAL {
             let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH));
@@ -174,6 +139,53 @@ fn run(
         let _ = tx.send_blocking(ScanMsg::Batch(batch));
     }
     Ok(())
+}
+
+/// The entry for one path, e.g. a file just pasted or renamed.
+pub fn entry_for(path: &Path) -> Option<Entry> {
+    let metadata = fs::metadata(path).ok()?;
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    make_entry(path.to_owned(), name, &metadata)
+}
+
+/// Classifies a folder or file; `None` for sockets, devices and such.
+fn make_entry(path: PathBuf, name: String, metadata: &fs::Metadata) -> Option<Entry> {
+    let (kind, format) = if metadata.is_dir() {
+        (Kind::Folder, "Folder")
+    } else if !metadata.is_file() {
+        return None;
+    } else if let Some(media) = media::classify(&name) {
+        media
+    } else if let Some(sniffed) = (!name.contains('.')).then(|| sniff_file(&path)).flatten() {
+        sniffed
+    } else {
+        (Kind::Other, media::other_label(&name))
+    };
+    let content_type = match kind {
+        Kind::Folder => Some("inode/directory".to_owned()),
+        Kind::Other => Some(
+            gtk::gio::content_type_guess(Some(&*name), None)
+                .0
+                .to_string(),
+        ),
+        _ => None,
+    };
+    Some(Entry {
+        key: name.to_lowercase(),
+        size: if kind == Kind::Folder {
+            0
+        } else {
+            metadata.len()
+        },
+        mtime: metadata.mtime(),
+        path,
+        name,
+        kind,
+        format,
+        content_type,
+        meta: None,
+        failed: false,
+    })
 }
 
 /// Recognizes images saved without an extension from their first bytes.
