@@ -1,0 +1,17 @@
+[package]
+name = "fastviz"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Fast, minimal photo and video browser for GNOME/Wayland"
+license = "MIT"
+publish = false
+
+[dependencies]
+# Feature flags match the system libraries on Zorin 18 / Ubuntu 24.04:
+# GTK 4.14.5 and libadwaita 1.5.0.
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+
+[profile.release]
+lto = "thin"
