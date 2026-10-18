@@ -1,0 +1,107 @@
+/* Neutral dark-gray look on top of libadwaita's forced dark scheme.
+ * Zorin's theme tints dark surfaces with the accent hue; these are libadwaita's
+ * stock neutral dark colors. The accent color is left to the system theme. */
+@define-color window_bg_color #242424;
+@define-color window_fg_color #ffffff;
+@define-color view_bg_color #1e1e1e;
+@define-color view_fg_color #ffffff;
+@define-color headerbar_bg_color #303030;
+@define-color headerbar_fg_color #ffffff;
+@define-color headerbar_border_color #ffffff;
+@define-color headerbar_backdrop_color #242424;
+@define-color headerbar_backdrop_fg_color #ffffff;
+@define-color headerbar_shade_color rgba(0, 0, 0, 0.36);
+@define-color headerbar_darker_shade_color rgba(0, 0, 0, 0.9);
+@define-color sidebar_bg_color #303030;
+@define-color sidebar_fg_color #ffffff;
+@define-color sidebar_backdrop_color #2a2a2a;
+@define-color sidebar_backdrop_fg_color #ffffff;
+@define-color sidebar_border_color rgba(0, 0, 0, 0.36);
+@define-color sidebar_shade_color rgba(0, 0, 0, 0.36);
+@define-color card_bg_color rgba(255, 255, 255, 0.08);
+@define-color card_fg_color #ffffff;
+@define-color card_shade_color rgba(0, 0, 0, 0.36);
+@define-color dialog_bg_color #383838;
+@define-color dialog_fg_color #ffffff;
+@define-color popover_bg_color #383838;
+@define-color popover_fg_color #ffffff;
+@define-color popover_shade_color rgba(0, 0, 0, 0.25);
+@define-color shade_color rgba(0, 0, 0, 0.25);
+@define-color scrollbar_outline_color rgba(0, 0, 0, 0.5);
+@define-color theme_bg_color #242424;
+@define-color theme_base_color #1e1e1e;
+@define-color borders rgba(255, 255, 255, 0.15);
+/* Zorin also defines unfocused-window variants; keep those neutral and undimmed. */
+@define-color window_backdrop_color #242424;
+@define-color window_backdrop_fg_color #ffffff;
+@define-color view_backdrop_color #1e1e1e;
+@define-color view_backdrop_fg_color #ffffff;
+@define-color headerbar_backdrop_border_color #ffffff;
+@define-color sidebar_backdrop_border_color rgba(0, 0, 0, 0.36);
+@define-color secondary_sidebar_bg_color #2a2a2a;
+@define-color secondary_sidebar_fg_color #ffffff;
+@define-color secondary_sidebar_border_color rgba(0, 0, 0, 0.36);
+@define-color secondary_sidebar_shade_color rgba(0, 0, 0, 0.36);
+@define-color secondary_sidebar_backdrop_color #272727;
+@define-color secondary_sidebar_backdrop_fg_color #ffffff;
+@define-color secondary_sidebar_backdrop_border_color rgba(0, 0, 0, 0.36);
+@define-color card_backdrop_color rgba(255, 255, 255, 0.08);
+@define-color card_backdrop_fg_color #ffffff;
+
+.fv-grid {
+  background-color: @view_bg_color;
+  padding: 6px;
+}
+
+.fv-grid > child {
+  padding: 6px;
+  border-radius: 8px;
+}
+
+.fv-grid > child:hover {
+  background-color: alpha(currentColor, 0.05);
+}
+
+.fv-grid > child:selected {
+  background-color: alpha(@accent_bg_color, 0.35);
+}
+
+.fv-tile > label {
+  font-size: 0.9em;
+}
+
+.fv-badge {
+  background-color: alpha(black, 0.6);
+  color: white;
+  border-radius: 999px;
+  padding: 4px;
+}
+
+.fv-tree {
+  background-color: @sidebar_bg_color;
+}
+
+.fv-statusbar {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 0.9em;
+  border-top: 1px solid alpha(currentColor, 0.1);
+}
+
+.fv-statusbar scale {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.fv-crumb {
+  padding: 2px 6px;
+  min-height: 24px;
+}
+
+.fv-crumb-current {
+  font-weight: bold;
+}
+
+.fv-crumb-separator {
+  margin: 0 2px;
+}

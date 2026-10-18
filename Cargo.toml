@@ -12,6 +12,9 @@ publish = false
 # GTK 4.14.5 and libadwaita 1.5.0.
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+async-channel = "2.5.0"
 
 [profile.release]
 lto = "thin"
