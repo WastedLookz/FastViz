@@ -4,6 +4,7 @@ mod grid;
 mod media;
 mod model;
 mod natsort;
+mod prefs;
 mod scan;
 mod settings;
 mod trace;
@@ -24,6 +25,7 @@ fn main() -> glib::ExitCode {
         load_css();
         app.set_accels_for_action("win.show-pane", &["F9"]);
         app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
+        app.set_accels_for_action("win.preferences", &["<Control>comma"]);
     });
     app.connect_activate(|app| {
         // A second launch just raises the existing window.

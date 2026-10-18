@@ -12,6 +12,10 @@ use crate::model::SortKey;
 #[serde(default)]
 pub struct Settings {
     pub last_folder: Option<String>,
+    /// Folder opened at startup; `None` means Home.
+    pub start_folder: Option<String>,
+    /// Open `last_folder` at startup instead of `start_folder`.
+    pub open_last_folder: bool,
     pub window_width: i32,
     pub window_height: i32,
     pub maximized: bool,
@@ -29,6 +33,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             last_folder: None,
+            start_folder: None,
+            open_last_folder: false,
             window_width: 1400,
             window_height: 900,
             maximized: false,

@@ -11,6 +11,7 @@ use gtk::{gio, glib};
 
 use crate::grid::{self, Grid};
 use crate::model::{self, FileItem, SortKey};
+use crate::prefs::{self, Startup};
 use crate::scan::{self, ScanMsg};
 use crate::settings::Settings;
 use crate::trace;
@@ -35,6 +36,7 @@ pub struct Window {
     size: gtk::Adjustment,
     pane_width: Cell<i32>,
     show_hidden: Cell<bool>,
+    startup_folder: Rc<RefCell<Startup>>,
     current: RefCell<Option<PathBuf>>,
     scan_task: RefCell<Option<glib::JoinHandle<()>>>,
     /// Item count and total bytes of the current folder.
@@ -179,6 +181,10 @@ impl Window {
             size,
             pane_width: Cell::new(settings.pane_width),
             show_hidden: Cell::new(settings.show_hidden),
+            startup_folder: Rc::new(RefCell::new(Startup {
+                folder: settings.start_folder.as_ref().map(PathBuf::from),
+                open_last: settings.open_last_folder,
+            })),
             current: RefCell::default(),
             scan_task: RefCell::default(),
             totals: Cell::new((0, 0)),
@@ -189,10 +195,12 @@ impl Window {
         this.connect_signals();
         this.update_sort_button();
 
-        let start = settings
-            .last_folder
-            .map(PathBuf::from)
-            .unwrap_or_else(glib::home_dir);
+        let start = if settings.open_last_folder {
+            settings.last_folder.as_ref()
+        } else {
+            settings.start_folder.as_ref()
+        };
+        let start = start.map(PathBuf::from).unwrap_or_else(glib::home_dir);
         this.navigate(start, true);
         this
     }
@@ -289,7 +297,20 @@ impl Window {
             ),
         );
 
-        for action in [sort_by, sort_desc, show_hidden, show_pane] {
+        let preferences = gio::SimpleAction::new("preferences", None);
+        preferences.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, _| {
+                prefs::present(
+                    &this.window,
+                    &this.startup_folder,
+                    this.current.borrow().clone(),
+                )
+            }
+        ));
+
+        for action in [sort_by, sort_desc, show_hidden, show_pane, preferences] {
             self.window.add_action(&action);
         }
     }
@@ -557,6 +578,7 @@ impl Window {
         let (sort_key, sort_desc) = self.sort.get();
         let (window_width, window_height) = self.window.default_size();
         let pane_visible = self.tree.widget.is_visible();
+        let startup = self.startup_folder.borrow();
         Settings {
             last_folder: self
                 .current
@@ -564,6 +586,12 @@ impl Window {
                 .as_ref()
                 .and_then(|p| p.to_str())
                 .map(String::from),
+            start_folder: startup
+                .folder
+                .as_ref()
+                .and_then(|p| p.to_str())
+                .map(String::from),
+            open_last_folder: startup.open_last,
             window_width,
             window_height,
             maximized: self.window.is_maximized(),
@@ -620,6 +648,9 @@ fn main_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     menu.append(Some("Show Hidden Folders"), Some("win.show-hidden"));
     menu.append(Some("Show Folder Pane"), Some("win.show-pane"));
+    let app = gio::Menu::new();
+    app.append(Some("Preferences"), Some("win.preferences"));
+    menu.append_section(None, &app);
     menu
 }
 
