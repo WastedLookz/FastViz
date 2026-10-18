@@ -226,6 +226,14 @@ impl Viewer {
             self.show(item, position);
         }
         self.widget.grab_focus();
+        // A double-click in the grid hands the focus back to the clicked
+        // tile after opening us; take it again once that click is done.
+        let widget = self.widget.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(widget) = widget.upgrade().filter(|w| w.is_mapped()) {
+                widget.grab_focus();
+            }
+        });
         self.pointer_moved();
     }
 
@@ -714,7 +722,8 @@ impl Viewer {
     /// A click without movement toggles 100%, or pauses a video; during a
     /// slideshow it stops the slideshow.
     fn clicked(&self, x: f64, y: f64) {
-        if self.playback.controls_at(&self.widget, x, y) {
+        // The second click of a double-click ends after we've left.
+        if !self.is_open() || self.playback.controls_at(&self.widget, x, y) {
             return;
         }
         if self.slideshow.borrow().is_some() {
@@ -802,15 +811,24 @@ impl Viewer {
         ));
         self.widget.add_controller(drag);
 
-        // Mouse back/forward buttons.
+        // Mouse back/forward buttons; a double-click leaves fullscreen. Any
+        // click also takes the keyboard focus back if something took it.
         let buttons = gtk::GestureClick::builder().button(0).build();
         buttons.connect_pressed(glib::clone!(
             #[weak(rename_to = viewer)]
             self,
-            move |gesture, _, _, _| match gesture.current_button() {
-                8 => viewer.go(viewer.neighbor(-1)),
-                9 => viewer.go(viewer.neighbor(1)),
-                _ => {}
+            move |gesture, presses, x, y| {
+                viewer.widget.grab_focus();
+                match gesture.current_button() {
+                    gdk::BUTTON_PRIMARY
+                        if presses == 2 && !viewer.playback.controls_at(&viewer.widget, x, y) =>
+                    {
+                        viewer.exit()
+                    }
+                    8 => viewer.go(viewer.neighbor(-1)),
+                    9 => viewer.go(viewer.neighbor(1)),
+                    _ => {}
+                }
             }
         ));
         self.widget.add_controller(buttons);
