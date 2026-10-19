@@ -124,8 +124,9 @@ impl Gl {
     }
 }
 
+/// mpv's letterbox color: black or the canvas's dark gray.
 fn background(black: bool) -> &'static str {
-    if black { "#000000" } else { "#808080" }
+    if black { "#000000" } else { "#1e1e1e" }
 }
 
 /// "1:05" or "1:02:03".

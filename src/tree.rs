@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
 use crate::natsort;
 use crate::scan::is_hidden;
@@ -22,6 +22,8 @@ use crate::scan::is_hidden;
 /// (root folder, folder) identifies a row; the same folder can appear under several roots.
 type RowKey = (PathBuf, PathBuf);
 type SelectHandler = Box<dyn Fn(PathBuf)>;
+/// Called on right-click with the widget clicked, the point in it and its folder.
+type ContextHandler = Box<dyn Fn(&gtk::Widget, f64, f64, PathBuf)>;
 
 pub struct FolderTree {
     pub widget: gtk::ScrolledWindow,
@@ -38,6 +40,7 @@ pub struct FolderTree {
     /// Set while selecting programmatically so it doesn't count as navigation.
     quiet: Cell<bool>,
     on_select: RefCell<Option<SelectHandler>>,
+    on_context: RefCell<Option<ContextHandler>>,
     /// Expanded-state watchers on bound rows, keyed by list item.
     bound: RefCell<HashMap<usize, (gtk::TreeListRow, glib::SignalHandlerId)>>,
 }
@@ -45,9 +48,11 @@ pub struct FolderTree {
 impl FolderTree {
     pub fn new(show_hidden: bool, expanded: &[(String, String)]) -> Rc<Self> {
         let roots = gio::ListStore::new::<FolderNode>();
+        // Every row gets a child model, even a leaf (whose arrow is hidden):
+        // GTK asks only once, and a leaf can gain a subfolder by pasting.
         let model = gtk::TreeListModel::new(roots.clone(), false, false, |item| {
             let node = item.downcast_ref::<FolderNode>()?;
-            (!node.leaf()).then(|| node.children().clone().upcast())
+            Some(node.children().clone().upcast())
         });
         let selection = gtk::SingleSelection::builder()
             .model(&model)
@@ -83,6 +88,7 @@ impl FolderTree {
             ),
             quiet: Cell::new(false),
             on_select: RefCell::default(),
+            on_context: RefCell::default(),
             bound: RefCell::default(),
         });
         tree.setup_factory(&factory);
@@ -94,6 +100,11 @@ impl FolderTree {
     /// Called with the folder the user picks in the tree.
     pub fn connect_selected(&self, f: impl Fn(PathBuf) + 'static) {
         self.on_select.replace(Some(Box::new(f)));
+    }
+
+    /// Called on right-click on a row, with that row's folder. Doesn't select it.
+    pub fn connect_context_menu(&self, f: impl Fn(&gtk::Widget, f64, f64, PathBuf) + 'static) {
+        self.on_context.replace(Some(Box::new(f)));
     }
 
     /// The deepest root containing `path` and its display name.
@@ -149,6 +160,9 @@ impl FolderTree {
             .filter(|row| row.is_expanded())
             .filter_map(|row| {
                 let node = row.item().and_downcast::<FolderNode>()?;
+                if node.leaf() {
+                    return None;
+                }
                 let root = root_of(&row);
                 Some((
                     root.path().to_str()?.to_owned(),
@@ -184,29 +198,34 @@ impl FolderTree {
     }
 
     fn setup_factory(self: &Rc<Self>, factory: &gtk::SignalListItemFactory) {
-        factory.connect_setup(|_, item| {
-            let item = item
-                .downcast_ref::<gtk::ListItem>()
-                .expect("tree list item");
-            let icon = gtk::Image::new();
-            let label = gtk::Label::builder()
-                .xalign(0.0)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .build();
-            let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            content.append(&icon);
-            content.append(&label);
-            let expander = gtk::TreeExpander::builder()
-                .child(&content)
-                .indent_for_icon(true)
-                .build();
-            // Hide the arrow once the folder is known to have no subfolders.
-            item.property_expression("item")
-                .chain_property::<gtk::TreeListRow>("item")
-                .chain_property::<FolderNode>("leaf")
-                .bind(&expander, "hide-expander", Some(item));
-            item.set_child(Some(&expander));
-        });
+        factory.connect_setup(glib::clone!(
+            #[weak(rename_to = tree)]
+            self,
+            move |_, item| {
+                let item = item
+                    .downcast_ref::<gtk::ListItem>()
+                    .expect("tree list item");
+                let icon = gtk::Image::new();
+                let label = gtk::Label::builder()
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build();
+                let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                content.append(&icon);
+                content.append(&label);
+                let expander = gtk::TreeExpander::builder()
+                    .child(&content)
+                    .indent_for_icon(true)
+                    .build();
+                // Hide the arrow once the folder is known to have no subfolders.
+                item.property_expression("item")
+                    .chain_property::<gtk::TreeListRow>("item")
+                    .chain_property::<FolderNode>("leaf")
+                    .bind(&expander, "hide-expander", Some(item));
+                expander.add_controller(tree.context_click(item));
+                item.set_child(Some(&expander));
+            }
+        ));
 
         factory.connect_bind(glib::clone!(
             #[weak(rename_to = tree)]
@@ -271,6 +290,35 @@ impl FolderTree {
                 }
             }
         ));
+    }
+
+    fn context_click(self: &Rc<Self>, item: &gtk::ListItem) -> gtk::GestureClick {
+        let click = gtk::GestureClick::builder()
+            .button(gdk::BUTTON_SECONDARY)
+            .build();
+        click.connect_pressed(glib::clone!(
+            #[weak(rename_to = tree)]
+            self,
+            #[weak]
+            item,
+            move |gesture, _, x, y| {
+                let Some(node) = item
+                    .item()
+                    .and_downcast::<gtk::TreeListRow>()
+                    .and_then(|row| row.item())
+                    .and_downcast::<FolderNode>()
+                else {
+                    return;
+                };
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                if let (Some(f), Some(widget)) =
+                    (tree.on_context.borrow().as_ref(), gesture.widget())
+                {
+                    f(&widget, x, y, node.path().to_owned());
+                }
+            }
+        ));
+        click
     }
 
     fn connect_signals(self: &Rc<Self>) {
@@ -408,12 +456,76 @@ impl FolderTree {
         }
     }
 
+    /// Brings listed folders up to date after a file operation in the app:
+    /// drops removed subfolders and adds new ones, without reading the
+    /// folders again. Changes made by other apps still need a reopen.
+    pub fn update_folders(&self, added: &[PathBuf], removed: &[PathBuf]) {
+        let show_hidden = self.show_hidden.get();
+        let added: Vec<(&Path, String)> = added
+            .iter()
+            .filter_map(|path| Some((path.as_path(), path.file_name()?.to_str()?.to_owned())))
+            .filter(|(_, name)| show_hidden || !is_hidden(name))
+            .collect();
+        let removed: HashSet<&Path> = removed.iter().map(PathBuf::as_path).collect();
+        if added.is_empty() && removed.is_empty() {
+            return;
+        }
+        let mut new_nodes = Vec::new();
+        // Visit the roots and every listed folder; the same folder can sit under several roots.
+        let mut nodes: Vec<FolderNode> = self.roots.iter::<FolderNode>().flatten().collect();
+        while let Some(node) = nodes.pop() {
+            let listed = node.imp().loaded.get();
+            let store = node.children();
+            if listed {
+                for i in (0..store.n_items()).rev() {
+                    let Some(child) = store.item(i).and_downcast::<FolderNode>() else {
+                        continue;
+                    };
+                    if removed.contains(child.path()) {
+                        store.remove(i);
+                    } else {
+                        nodes.push(child);
+                    }
+                }
+            }
+            for (path, name) in added
+                .iter()
+                .filter(|(p, _)| p.parent() == Some(node.path()))
+            {
+                node.set_leaf(false);
+                // Unlisted folders pick it up when they are expanded.
+                if !listed || find(store, |n| n.path() == *path).is_some() {
+                    continue;
+                }
+                let key = name.to_lowercase();
+                let position = find(store, |n| {
+                    natsort::compare(&key, &n.name().to_lowercase())
+                        .then_with(|| name.as_str().cmp(n.name()))
+                        .is_lt()
+                })
+                .unwrap_or(store.n_items());
+                let new = FolderNode::new(
+                    path.to_path_buf(),
+                    name.clone(),
+                    themed("folder-symbolic"),
+                    false,
+                );
+                store.insert(position, &new);
+                new_nodes.push(new);
+            }
+            if listed && store.n_items() == 0 {
+                node.set_leaf(true);
+            }
+        }
+        probe_leaves(new_nodes, show_hidden);
+    }
+
     /// Lists `node`'s subfolders on a worker thread, once.
     fn load(&self, node: &FolderNode) {
         if node.imp().loading.replace(true) {
             return;
         }
-        let store = node.children().downgrade();
+        let weak = node.downgrade();
         let dir = node.path().to_owned();
         let show_hidden = self.show_hidden.get();
         let (tx, rx) = async_channel::unbounded();
@@ -426,9 +538,10 @@ impl FolderTree {
 
         glib::spawn_future_local(async move {
             while let Ok(msg) = rx.recv().await {
-                let Some(store) = store.upgrade() else {
+                let Some(node) = weak.upgrade() else {
                     return;
                 };
+                let store = node.children();
                 match msg {
                     TreeMsg::Children(dirs) => {
                         crate::trace!(
@@ -443,6 +556,11 @@ impl FolderTree {
                             })
                             .collect();
                         store.extend_from_slice(&nodes);
+                        node.imp().loaded.set(true);
+                        // Also hides the arrow of folders we can't read.
+                        if nodes.is_empty() {
+                            node.set_leaf(true);
+                        }
                     }
                     TreeMsg::Leaf(index) => {
                         if let Some(node) = store.item(index).and_downcast::<FolderNode>() {
@@ -453,6 +571,43 @@ impl FolderTree {
             }
         });
     }
+}
+
+/// The position of the first node in `store` that matches.
+fn find(store: &gio::ListStore, f: impl Fn(&FolderNode) -> bool) -> Option<u32> {
+    (0..store.n_items()).find(|&i| {
+        store
+            .item(i)
+            .and_downcast::<FolderNode>()
+            .is_some_and(|n| f(&n))
+    })
+}
+
+/// Hides the arrow of newly added folders that have no subfolders.
+fn probe_leaves(nodes: Vec<FolderNode>, show_hidden: bool) {
+    if nodes.is_empty() {
+        return;
+    }
+    let paths: Vec<PathBuf> = nodes.iter().map(|node| node.path().to_owned()).collect();
+    let (tx, rx) = async_channel::unbounded();
+    std::thread::Builder::new()
+        .name("tree".into())
+        .spawn(move || {
+            for (index, path) in paths.iter().enumerate() {
+                if !has_subfolder(path, show_hidden) && tx.send_blocking(index).is_err() {
+                    return;
+                }
+            }
+        })
+        .expect("failed to spawn tree thread");
+    let nodes: Vec<_> = nodes.iter().map(ObjectExt::downgrade).collect();
+    glib::spawn_future_local(async move {
+        while let Ok(index) = rx.recv().await {
+            if let Some(node) = nodes[index].upgrade() {
+                node.set_leaf(true);
+            }
+        }
+    });
 }
 
 fn root_of(row: &gtk::TreeListRow) -> FolderNode {
@@ -574,7 +729,10 @@ mod imp {
         pub name: OnceCell<String>,
         pub icon: OnceCell<gio::Icon>,
         pub children: OnceCell<gio::ListStore>,
+        /// Listing requested (on first expand).
         pub loading: Cell<bool>,
+        /// Listing arrived: `children` holds the subfolders.
+        pub loaded: Cell<bool>,
     }
 
     #[glib::object_subclass]

@@ -117,7 +117,7 @@ pub fn present(
     group.add(&open_last);
     let black_row = adw::SwitchRow::builder()
         .title("Black Background")
-        .subtitle("Instead of 50% gray; B switches it while viewing")
+        .subtitle("Instead of dark gray; B switches it while viewing")
         .active(black)
         .build();
     black_row.connect_active_notify(move |row| on_black(row.is_active()));

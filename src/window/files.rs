@@ -1,17 +1,18 @@
 //! Cut, copy, paste, rename and delete in the grid: the actions, their
-//! shortcuts and context menu, the clipboard, and running `fileops` jobs with
-//! progress, in-place grid updates and undo.
+//! shortcuts and context menus (grid tiles, and Paste Into Folder on tree
+//! rows), the clipboard, and running `fileops` jobs with progress, in-place
+//! grid and tree updates and undo.
 
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib, graphene};
 
-use super::Window;
+use super::{Window, display_name};
 use crate::fileops::{self, Op, Report};
 use crate::grid;
 use crate::media::Kind;
@@ -56,6 +57,18 @@ impl Window {
         add("cut", |this| this.copy_selection(true));
         add("copy", |this| this.copy_selection(false));
         add("paste", |this| this.paste());
+        let paste_into =
+            gio::SimpleAction::new("paste-into", Some(&PathBuf::static_variant_type()));
+        paste_into.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, folder| {
+                if let Some(folder) = folder.and_then(PathBuf::from_variant) {
+                    this.paste_into(folder);
+                }
+            }
+        ));
+        self.window.add_action(&paste_into);
         add("rename", |this| this.rename_selected());
         add("trash", |this| {
             let paths = this.selected_paths();
@@ -92,6 +105,15 @@ impl Window {
             self,
             move |widget, x, y| this.show_context_menu(widget, x, y)
         ));
+        self.tree.connect_context_menu(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |widget, x, y, folder| {
+                let menu = gio::Menu::new();
+                menu.append_item(&paste_into_item(&folder));
+                this.popup_menu(&menu, widget, x, y);
+            }
+        ));
         self.selection.connect_selection_changed(glib::clone!(
             #[weak(rename_to = this)]
             self,
@@ -121,12 +143,11 @@ impl Window {
         }
         enable("rename", selected == 1);
         let formats = self.window.clipboard().formats();
-        enable(
-            "paste",
-            formats.contains_type(gdk::FileList::static_type())
-                || formats.contain_mime_type("text/uri-list")
-                || formats.contain_mime_type(COPIED_FILES),
-        );
+        let files = formats.contains_type(gdk::FileList::static_type())
+            || formats.contain_mime_type("text/uri-list")
+            || formats.contain_mime_type(COPIED_FILES);
+        enable("paste", files);
+        enable("paste-into", files);
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
@@ -136,14 +157,27 @@ impl Window {
     }
 
     fn show_context_menu(self: &Rc<Self>, widget: &gtk::Widget, x: f64, y: f64) {
-        let menu = if self.selection.selection().is_empty() {
-            let menu = gio::Menu::new();
-            menu.append_item(&menu_item("Paste", "win.paste", "<Control>v"));
-            menu
-        } else {
-            item_menu()
+        let menu = match self.selection.selection().size() {
+            0 => {
+                let menu = gio::Menu::new();
+                menu.append_item(&menu_item("Paste", "win.paste", "<Control>v"));
+                menu
+            }
+            1 => {
+                let folder = grid::selected(self.selection.upcast_ref())
+                    .next()
+                    .filter(|item| item.entry().kind == Kind::Folder)
+                    .map(|item| item.entry().path.clone());
+                item_menu(folder.as_deref())
+            }
+            _ => item_menu(None),
         };
-        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        self.popup_menu(&menu, widget, x, y);
+    }
+
+    /// Opens `menu` at the point (`x`, `y`) in `widget`.
+    fn popup_menu(&self, menu: &gio::Menu, widget: &gtk::Widget, x: f64, y: f64) {
+        let popover = gtk::PopoverMenu::from_model(Some(menu));
         popover.set_parent(&self.content);
         popover.set_has_arrow(false);
         popover.set_halign(gtk::Align::Start);
@@ -184,11 +218,16 @@ impl Window {
         }
     }
 
-    /// Pastes files from the clipboard (ours or another app's) into this folder.
+    /// Pastes files from the clipboard into this folder.
     fn paste(self: &Rc<Self>) {
         let Some(folder) = self.current.borrow().clone() else {
             return;
         };
+        self.paste_into(folder);
+    }
+
+    /// Pastes files from the clipboard (ours or another app's) into `folder`.
+    fn paste_into(self: &Rc<Self>, folder: PathBuf) {
         let clipboard = self.window.clipboard();
         let ours = self.clipboard.borrow().clone();
         if clipboard.is_local()
@@ -381,11 +420,20 @@ impl Window {
     /// Runs a file operation, showing progress and updating the grid in place.
     fn run(self: &Rc<Self>, op: Op, job: Job) {
         let verb = op.verb();
+        // Pasting elsewhere (a tree folder or folder tile) changes nothing in
+        // view, so the toast says where the files went.
+        let into = match &op {
+            Op::Copy(_, dir) | Op::Move(_, dir) if self.current.borrow().as_ref() != Some(dir) => {
+                format!(" into “{}”", display_name(dir))
+            }
+            _ => String::new(),
+        };
         let reports = fileops::start(op);
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let mut pending = Pending::default();
             let mut gone: Vec<PathBuf> = Vec::new();
+            let mut new_folders: Vec<PathBuf> = Vec::new();
             let mut failures: Vec<(PathBuf, String)> = Vec::new();
             let mut last_flush = Instant::now();
             while let Ok(report) = reports.recv().await {
@@ -403,7 +451,12 @@ impl Window {
                                 .set_text(&format!("{verb} {} of {total}…", done + 1));
                         }
                     }
-                    Report::Added(entry) => pending.added.push(entry),
+                    Report::Added(entry) => {
+                        if entry.kind == Kind::Folder {
+                            new_folders.push(entry.path.clone());
+                        }
+                        pending.added.push(entry);
+                    }
                     Report::Removed(path) => {
                         gone.push(path.clone());
                         pending.removed.insert(path);
@@ -413,7 +466,8 @@ impl Window {
                     Report::NoTrash(paths) => this.confirm_delete(paths, true),
                     Report::Done { succeeded } => {
                         this.apply(&mut pending);
-                        this.finish(job, succeeded, gone, &failures, &pending);
+                        this.tree.update_folders(&new_folders, &gone);
+                        this.finish(job, succeeded, &into, gone, &failures, &pending);
                         return;
                     }
                 }
@@ -486,6 +540,7 @@ impl Window {
         self: &Rc<Self>,
         job: Job,
         succeeded: usize,
+        into: &str,
         gone: Vec<PathBuf>,
         failures: &[(PathBuf, String)],
         pending: &Pending,
@@ -530,8 +585,8 @@ impl Window {
             }
         };
         let message = match job {
-            Job::Copy => format!("Pasted {}", items(succeeded)),
-            Job::Move => format!("Moved {}", items(succeeded)),
+            Job::Copy => format!("Pasted {}{into}", items(succeeded)),
+            Job::Move => format!("Moved {}{into}", items(succeeded)),
             Job::Trash => format!("Moved {} to Trash", items(succeeded)),
             Job::Delete => format!("Deleted {}", items(succeeded)),
             Job::Restore => format!("Restored {}", items(succeeded)),
@@ -575,11 +630,15 @@ fn shortcuts(bindings: &[(&str, &str)]) -> gtk::ShortcutController {
     controller
 }
 
-fn item_menu() -> gio::Menu {
+/// The menu for selected tiles; `folder` when it is a single folder.
+fn item_menu(folder: Option<&Path>) -> gio::Menu {
     let edit = gio::Menu::new();
     edit.append_item(&menu_item("Cut", "win.cut", "<Control>x"));
     edit.append_item(&menu_item("Copy", "win.copy", "<Control>c"));
     edit.append_item(&menu_item("Paste", "win.paste", "<Control>v"));
+    if let Some(folder) = folder {
+        edit.append_item(&paste_into_item(folder));
+    }
     let file = gio::Menu::new();
     file.append_item(&menu_item("Rename…", "win.rename", "F2"));
     let trash = gio::Menu::new();
@@ -589,6 +648,12 @@ fn item_menu() -> gio::Menu {
     menu.append_section(None, &file);
     menu.append_section(None, &trash);
     menu
+}
+
+fn paste_into_item(folder: &Path) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some("Paste Into Folder"), None);
+    item.set_action_and_target_value(Some("win.paste-into"), Some(&folder.to_variant()));
+    item
 }
 
 /// A menu item showing its (grid-local) shortcut.

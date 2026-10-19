@@ -11,6 +11,9 @@ use gtk::{gdk, glib, graphene, gsk};
 
 /// Most device pixels per image pixel when zooming in.
 const MAX_ZOOM: f64 = 32.0;
+/// The background unless B switched it to black: the grid's dark gray
+/// (`@view_bg_color` in style.css, #1e1e1e).
+const GRAY: f32 = 30.0 / 255.0;
 
 mod imp {
     use super::*;
@@ -45,7 +48,7 @@ mod imp {
             let background = if self.black.get() {
                 gdk::RGBA::BLACK
             } else {
-                gdk::RGBA::new(0.5, 0.5, 0.5, 1.0)
+                gdk::RGBA::new(GRAY, GRAY, GRAY, 1.0)
             };
             snapshot.append_color(&background, &graphene::Rect::new(0.0, 0.0, width, height));
 

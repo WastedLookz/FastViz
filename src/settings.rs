@@ -25,7 +25,7 @@ pub struct Settings {
     pub sort_key: SortKey,
     pub sort_desc: bool,
     pub thumb_size: i32,
-    /// Fullscreen background: black instead of 50% gray.
+    /// Fullscreen background: black instead of the grid's dark gray.
     pub viewer_black: bool,
     /// Video volume in percent.
     pub volume: f64,
