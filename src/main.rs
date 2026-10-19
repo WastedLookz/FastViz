@@ -27,7 +27,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-const APP_ID: &str = "io.github.fastviz.FastViz";
+const APP_ID: &str = "io.github.wastedlookz.FastViz";
 
 fn main() -> glib::ExitCode {
     trace::init();

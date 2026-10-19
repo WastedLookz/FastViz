@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Fast, minimal photo and video browser for GNOME/Wayland"
-license = "MIT"
+license = "GPL-3.0-or-later"
+authors = ["WastedLookz <231484447+WastedLookz@users.noreply.github.com>"]
+repository = "https://github.com/WastedLookz/FastViz"
+homepage = "https://github.com/WastedLookz/FastViz"
+readme = "README.md"
 publish = false
 
 [dependencies]
@@ -24,3 +28,22 @@ ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec"
 
 [profile.release]
 lto = "thin"
+
+# `scripts/build-deb.sh` builds the .deb (with cargo-deb).
+[package.metadata.deb]
+copyright = "2026, WastedLookz"
+section = "graphics"
+extended-description = """\
+A minimal, very fast photo and video browser for GNOME: a folder tree and a \
+thumbnail grid that stays smooth with tens of thousands of files, a persistent \
+thumbnail cache, a fullscreen viewer with zoom and preloading, video playback \
+with hardware decoding, slideshows and Files-compatible cut, copy and paste."""
+depends = "$auto"
+assets = [
+    ["target/release/fastviz", "usr/bin/", "755"],
+    ["data/io.github.wastedlookz.FastViz.desktop", "usr/share/applications/", "644"],
+    ["data/io.github.wastedlookz.FastViz.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["data/icons/io.github.wastedlookz.FastViz.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["README.md", "usr/share/doc/fastviz/", "644"],
+    ["target/release/THIRD-PARTY-LICENSES.txt", "usr/share/doc/fastviz/", "644"],
+]

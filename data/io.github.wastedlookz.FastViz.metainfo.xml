@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.wastedlookz.FastViz</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>FastViz</name>
+  <summary>Browse photos and videos quickly</summary>
+  <developer id="io.github.wastedlookz">
+    <name>WastedLookz</name>
+  </developer>
+  <description>
+    <p>
+      FastViz is a minimal, very fast photo and video browser. It opens large
+      folders of photos and clips instantly, even on slow or external drives,
+      and keeps a thumbnail cache so folders you have visited before show up
+      at once.
+    </p>
+    <ul>
+      <li>Folder tree and a thumbnail grid that stays smooth with tens of thousands of files</li>
+      <li>Fullscreen viewer with zoom, and the next and previous items preloaded</li>
+      <li>Video playback with hardware decoding</li>
+      <li>JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC/HEIF and AVIF photos, and nearly any video format</li>
+      <li>Sort by name, date, date taken, format, dimensions or size; shuffle; show only pictures or videos</li>
+      <li>Cut, copy, paste, rename and move to Trash with undo, working together with Files</li>
+      <li>Slideshows</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.wastedlookz.FastViz.desktop</launchable>
+  <url type="homepage">https://github.com/WastedLookz/FastViz</url>
+  <url type="bugtracker">https://github.com/WastedLookz/FastViz/issues</url>
+  <provides>
+    <binary>fastviz</binary>
+  </provides>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-19">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>
