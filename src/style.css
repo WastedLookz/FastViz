@@ -81,6 +81,13 @@
   background-color: @sidebar_bg_color;
 }
 
+/* Compact rows, about half of libadwaita's 36px + 2px gap, so more folders fit. */
+.fv-tree .navigation-sidebar > row {
+  min-height: 20px;
+  margin-bottom: 0;
+  border-radius: 5px;
+}
+
 .fv-statusbar {
   min-height: 26px;
   padding: 0 10px;
