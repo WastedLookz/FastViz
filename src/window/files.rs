@@ -560,7 +560,6 @@ impl Window {
 
     /// Applies a job's additions and removals to the grid.
     fn apply(&self, pending: &mut Pending) {
-        let (mut count, mut bytes) = self.totals.get();
         if !pending.removed.is_empty() {
             if pending.gap.is_none() {
                 pending.gap = (0..self.selection.n_items()).find(|&position| {
@@ -575,8 +574,7 @@ impl Window {
                     continue;
                 };
                 if pending.removed.contains(&item.entry().path) {
-                    count = count.saturating_sub(1);
-                    bytes = bytes.saturating_sub(item.entry().size);
+                    self.tally([item.entry()], true);
                     self.store.remove(index);
                 }
             }
@@ -599,8 +597,7 @@ impl Window {
                 .map(|item| item.entry().path.clone())
                 .collect();
             entries.retain(|e| !present.contains(&e.path));
-            count += entries.len() as u32;
-            bytes += entries.iter().map(|e| e.size).sum::<u64>();
+            self.tally(&entries, false);
             let items: Vec<FileItem> = entries.into_iter().map(FileItem::new).collect();
             self.thumbnailer.register(&items);
             // Dimensions and dates for the status bar and metadata sorts.
@@ -608,15 +605,8 @@ impl Window {
             pending.new_ids.extend(items.iter().map(FileItem::id));
             self.store.extend_from_slice(&items);
         }
-        self.totals.set((count, bytes));
         self.update_count_status();
-        if self.store.n_items() == 0 {
-            self.empty.set_title("Empty Folder");
-            self.empty.set_description(None);
-            self.stack.set_visible_child(&self.empty);
-        } else {
-            self.stack.set_visible_child(&self.grid.scroller);
-        }
+        self.update_empty();
     }
 
     fn finish(

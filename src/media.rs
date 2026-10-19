@@ -13,6 +13,9 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Every kind, in order (`kind as usize` indexes per-kind tables).
+    pub const ALL: [Kind; 4] = [Self::Folder, Self::Image, Self::Video, Self::Other];
+
     pub fn is_media(self) -> bool {
         matches!(self, Self::Image | Self::Video)
     }

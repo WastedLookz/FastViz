@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use gtk::glib;
 use serde::{Deserialize, Serialize};
 
-use crate::model::SortKey;
+use crate::model::{Show, SortKey};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -23,7 +23,12 @@ pub struct Settings {
     pub pane_visible: bool,
     pub show_hidden: bool,
     pub sort_key: SortKey,
-    pub sort_desc: bool,
+    /// Largest first (newest, Z to A), which the user calls ascending. It is
+    /// the old `sort_desc` value, so saved settings keep their order.
+    #[serde(alias = "sort_desc")]
+    pub sort_ascending: bool,
+    /// Which files the grid shows.
+    pub show: Show,
     pub thumb_size: i32,
     /// Fullscreen background: black instead of the grid's dark gray.
     pub viewer_black: bool,
@@ -52,7 +57,8 @@ impl Default for Settings {
             pane_visible: true,
             show_hidden: false,
             sort_key: SortKey::Modified,
-            sort_desc: true,
+            sort_ascending: true,
+            show: Show::All,
             thumb_size: 160,
             viewer_black: false,
             volume: 100.0,
@@ -95,5 +101,21 @@ impl Settings {
         if let Err(e) = result {
             eprintln!("Could not save settings to {}: {e}", path.display());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_sort_direction_carries_over() {
+        let old: Settings = toml::from_str("sort_desc = false").unwrap();
+        assert!(!old.sort_ascending);
+        let old: Settings = toml::from_str("sort_desc = true").unwrap();
+        assert!(old.sort_ascending);
+        let saved = toml::to_string(&Settings::default()).unwrap();
+        assert!(saved.contains("sort_ascending = true"));
+        assert!(!saved.contains("sort_desc"));
     }
 }

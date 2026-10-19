@@ -85,14 +85,16 @@ pub fn compare(a: &FileItem, b: &FileItem, key: SortKey) -> Ordering {
         .then_with(|| ea.name.cmp(&eb.name))
 }
 
-/// A sorter reading the shared (key, descending) state and the shuffle seed
+/// A sorter reading the shared (key, ascending) state and the shuffle seed
 /// (`Some` while shuffled); call `changed` after updating either.
+/// Ascending puts the largest first (newest, Z to A, biggest): the user's
+/// reading of it (2026-10-19), and the default.
 pub fn sorter(
     state: Rc<Cell<(SortKey, bool)>>,
     shuffle: Rc<Cell<Option<u64>>>,
 ) -> gtk::CustomSorter {
     gtk::CustomSorter::new(move |a, b| {
-        let (key, descending) = state.get();
+        let (key, ascending) = state.get();
         let (Some(a), Some(b)) = (a.downcast_ref::<FileItem>(), b.downcast_ref::<FileItem>())
         else {
             return gtk::Ordering::Equal;
@@ -107,7 +109,70 @@ pub fn sorter(
             return shuffled(a.id(), b.id(), seed).into();
         }
         let ord = compare(a, b, key);
-        if descending { ord.reverse() } else { ord }.into()
+        if ascending { ord.reverse() } else { ord }.into()
+    })
+}
+
+/// Which files the grid shows; folders always show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Show {
+    #[default]
+    All,
+    Media,
+    Pictures,
+    Videos,
+}
+
+impl Show {
+    pub const ALL: [Show; 4] = [Self::All, Self::Media, Self::Pictures, Self::Videos];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Media => "media",
+            Self::Pictures => "pictures",
+            Self::Videos => "videos",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.id() == id)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All Files",
+            Self::Media => "Pictures and Videos",
+            Self::Pictures => "Pictures",
+            Self::Videos => "Videos",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::All => "view-grid-symbolic",
+            Self::Media => "camera-photo-symbolic",
+            Self::Pictures => "image-x-generic-symbolic",
+            Self::Videos => "video-x-generic-symbolic",
+        }
+    }
+
+    pub fn includes(self, kind: Kind) -> bool {
+        match (self, kind) {
+            (Self::All, _) | (_, Kind::Folder) => true,
+            (Self::Media, kind) => kind.is_media(),
+            (Self::Pictures, kind) => kind == Kind::Image,
+            (Self::Videos, kind) => kind == Kind::Video,
+        }
+    }
+}
+
+/// A filter reading the shared `Show` state; call `changed` after updating it.
+pub fn filter(show: Rc<Cell<Show>>) -> gtk::CustomFilter {
+    gtk::CustomFilter::new(move |item| {
+        item.downcast_ref::<FileItem>()
+            .is_some_and(|item| show.get().includes(item.entry().kind))
     })
 }
 
@@ -257,5 +322,18 @@ mod tests {
         assert_ne!(one, (1..=200).collect::<Vec<_>>());
         assert_ne!(one, two);
         assert_eq!(one, order(1));
+    }
+
+    #[test]
+    fn show_keeps_folders() {
+        for show in Show::ALL {
+            assert!(show.includes(Kind::Folder));
+            assert_eq!(Show::from_id(show.id()), Some(show));
+        }
+        assert!(Show::All.includes(Kind::Other));
+        assert!(!Show::Media.includes(Kind::Other));
+        assert!(Show::Media.includes(Kind::Video));
+        assert!(!Show::Pictures.includes(Kind::Video));
+        assert!(!Show::Videos.includes(Kind::Image));
     }
 }

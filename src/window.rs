@@ -12,7 +12,7 @@ use gtk::{gio, glib};
 use crate::grid::{self, Grid};
 use crate::loader::Thumbnailer;
 use crate::media::Kind;
-use crate::model::{self, FileItem, SortKey};
+use crate::model::{self, FileItem, Show, SortKey};
 use crate::prefs::{self, Startup};
 use crate::scan::{self, ScanMsg};
 use crate::settings::Settings;
@@ -40,6 +40,14 @@ pub struct Window {
     shuffle: Rc<Cell<Option<u64>>>,
     sort_label: gtk::Label,
     sort_icon: gtk::Image,
+    /// Which files show (folders always do).
+    show: Rc<Cell<Show>>,
+    filter: gtk::CustomFilter,
+    show_label: gtk::Label,
+    show_icon: gtk::Image,
+    /// The thumbnail area's header, and the folder pane under its own.
+    header: adw::HeaderBar,
+    sidebar: adw::ToolbarView,
     crumbs: gtk::Box,
     count_label: gtk::Label,
     selection_label: gtk::Label,
@@ -49,8 +57,8 @@ pub struct Window {
     startup_folder: Rc<RefCell<Startup>>,
     current: RefCell<Option<PathBuf>>,
     scan_task: RefCell<Option<glib::JoinHandle<()>>>,
-    /// Item count and total bytes of the current folder.
-    totals: Cell<(u32, u64)>,
+    /// Item count and total bytes of the current folder, per kind (`Kind as usize`).
+    totals: Cell<[(u32, u64); 4]>,
     scanning: Cell<bool>,
     /// True until the first folder finishes loading (falls back to Home if it fails).
     startup: Cell<bool>,
@@ -74,11 +82,14 @@ pub struct Window {
 impl Window {
     /// Opens `initial` (a file or folder from outside) instead of the start folder.
     pub fn new(app: &adw::Application, settings: Settings, initial: Option<PathBuf>) -> Rc<Self> {
-        let sort = Rc::new(Cell::new((settings.sort_key, settings.sort_desc)));
+        let sort = Rc::new(Cell::new((settings.sort_key, settings.sort_ascending)));
         let store = gio::ListStore::new::<FileItem>();
         let shuffle = Rc::new(Cell::new(None));
         let sorter = model::sorter(sort.clone(), shuffle.clone());
-        let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter.clone()));
+        let show = Rc::new(Cell::new(settings.show));
+        let filter = model::filter(show.clone());
+        let filtered = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
+        let sorted = gtk::SortListModel::new(Some(filtered), Some(sorter.clone()));
         let selection = gtk::MultiSelection::new(Some(sorted));
 
         let size = gtk::Adjustment::new(
@@ -105,18 +116,6 @@ impl Window {
         trace!("building window");
         let tree = FolderTree::new(settings.show_hidden, &settings.expanded);
         trace!("folder tree ready");
-        tree.widget.set_visible(settings.pane_visible);
-        let paned = gtk::Paned::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .start_child(&tree.widget)
-            .end_child(&stack)
-            .resize_start_child(false)
-            .shrink_start_child(false)
-            .shrink_end_child(false)
-            .position(settings.pane_width)
-            .vexpand(true)
-            .build();
-
         let count_label = gtk::Label::builder().xalign(0.0).build();
         let selection_label = gtk::Label::builder()
             .xalign(0.0)
@@ -140,10 +139,6 @@ impl Window {
         statusbar.append(&selection_label);
         statusbar.append(&slider);
 
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        content.append(&paned);
-        content.append(&statusbar);
-
         let crumbs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let crumb_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::External)
@@ -152,9 +147,11 @@ impl Window {
             .child(&crumbs)
             .build();
         // Keep the deepest folder in view when the path is too long to fit.
-        crumb_scroller
-            .hadjustment()
-            .connect_changed(|adj| adj.set_value(adj.upper() - adj.page_size()));
+        // After layout: set during allocation, the viewport resets it.
+        crumb_scroller.hadjustment().connect_changed(|adj| {
+            let adj = adj.clone();
+            glib::idle_add_local_once(move || adj.set_value(adj.upper() - adj.page_size()));
+        });
 
         let sort_label = gtk::Label::new(None);
         let sort_icon = gtk::Image::new();
@@ -171,15 +168,52 @@ impl Window {
             .menu_model(&main_menu())
             .tooltip_text("Menu")
             .build();
+        let show_label = gtk::Label::new(None);
+        let show_icon = gtk::Image::new();
+        let show_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        show_content.append(&show_icon);
+        show_content.append(&show_label);
+        let show_button = gtk::MenuButton::builder()
+            .child(&show_content)
+            .menu_model(&show_menu())
+            .tooltip_text("Show")
+            .build();
         let header = adw::HeaderBar::builder()
             .title_widget(&crumb_scroller)
+            // The folder pane's header has them while it is shown.
+            .show_start_title_buttons(!settings.pane_visible)
             .build();
+        header.pack_start(&show_button);
         header.pack_end(&menu_button);
         header.pack_end(&sort_button);
+        let main = adw::ToolbarView::new();
+        main.add_top_bar(&header);
+        main.set_content(Some(&stack));
 
-        let view = adw::ToolbarView::new();
-        view.add_top_bar(&header);
-        view.set_content(Some(&content));
+        // The folder pane has its own (empty) header, so the thumbnail
+        // area's header starts where the grid does.
+        let sidebar_header = adw::HeaderBar::builder()
+            .title_widget(&gtk::Label::new(None))
+            .show_end_title_buttons(false)
+            .build();
+        let sidebar = adw::ToolbarView::new();
+        sidebar.add_top_bar(&sidebar_header);
+        sidebar.set_content(Some(&tree.widget));
+        sidebar.set_visible(settings.pane_visible);
+        let paned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .start_child(&sidebar)
+            .end_child(&main)
+            .resize_start_child(false)
+            .shrink_start_child(false)
+            .shrink_end_child(false)
+            .position(settings.pane_width)
+            .vexpand(true)
+            .build();
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.append(&paned);
+        content.append(&statusbar);
         let slideshow = SlideshowOptions {
             interval: settings.slideshow_interval.clamp(1.0, 60.0),
             repeat: settings.slideshow_loop,
@@ -192,7 +226,7 @@ impl Window {
             slideshow,
         );
         let pages = gtk::Stack::new();
-        pages.add_named(&view, Some("browser"));
+        pages.add_named(&content, Some("browser"));
         pages.add_named(&viewer.widget, Some("viewer"));
         // Toasts (like Trash with Undo) show over both pages.
         let toasts = adw::ToastOverlay::new();
@@ -222,6 +256,12 @@ impl Window {
             shuffle,
             sort_label,
             sort_icon,
+            show,
+            filter,
+            show_label,
+            show_icon,
+            header,
+            sidebar,
             crumbs,
             count_label,
             selection_label,
@@ -234,7 +274,7 @@ impl Window {
             })),
             current: RefCell::default(),
             scan_task: RefCell::default(),
-            totals: Cell::new((0, 0)),
+            totals: Cell::new([(0, 0); 4]),
             scanning: Cell::new(false),
             startup: Cell::new(true),
             resort_queued: Cell::new(false),
@@ -253,6 +293,7 @@ impl Window {
         this.setup_viewer();
         this.connect_signals();
         this.update_sort_button();
+        this.update_show_button();
 
         let start = if settings.open_last_folder {
             settings.last_folder.as_ref()
@@ -296,10 +337,25 @@ impl Window {
         let Some(path) = self.pending_open.borrow().clone() else {
             return;
         };
-        let found = (0..self.selection.n_items()).find_map(|position| {
-            let item = self.selection.item(position).and_downcast::<FileItem>()?;
-            (item.entry().path == path).then_some((position, item))
-        });
+        let find = || {
+            (0..self.selection.n_items()).find_map(|position| {
+                let item = self.selection.item(position).and_downcast::<FileItem>()?;
+                (item.entry().path == path).then_some((position, item))
+            })
+        };
+        let mut found = find();
+        // Hidden by the Show filter: show everything rather than not open it.
+        if found.is_none()
+            && self.show.get() != Show::All
+            && self
+                .store
+                .iter::<FileItem>()
+                .flatten()
+                .any(|item| item.entry().path == path)
+        {
+            self.set_show(Show::All);
+            found = find();
+        }
         let Some((position, item)) = found else {
             return;
         };
@@ -359,20 +415,35 @@ impl Window {
             }
         ));
 
-        let sort_desc = gio::SimpleAction::new_stateful(
-            "sort-desc",
+        let sort_ascending = gio::SimpleAction::new_stateful(
+            "sort-ascending",
             Some(glib::VariantTy::BOOLEAN),
-            &settings.sort_desc.to_variant(),
+            &settings.sort_ascending.to_variant(),
         );
-        sort_desc.connect_activate(glib::clone!(
+        sort_ascending.connect_activate(glib::clone!(
             #[weak(rename_to = this)]
             self,
             move |action, param| {
-                let Some(desc) = param.and_then(|p| p.get::<bool>()) else {
+                let Some(ascending) = param.and_then(|p| p.get::<bool>()) else {
                     return;
                 };
-                action.set_state(&desc.to_variant());
-                this.set_sort(this.sort.get().0, desc);
+                action.set_state(&ascending.to_variant());
+                this.set_sort(this.sort.get().0, ascending);
+            }
+        ));
+
+        let show_files = gio::SimpleAction::new_stateful(
+            "show-files",
+            Some(glib::VariantTy::STRING),
+            &settings.show.id().to_variant(),
+        );
+        show_files.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, param| {
+                if let Some(show) = param.and_then(|p| p.str()).and_then(Show::from_id) {
+                    this.set_show(show);
+                }
             }
         ));
 
@@ -400,7 +471,8 @@ impl Window {
                     if !show {
                         this.pane_width.set(this.paned.position());
                     }
-                    this.tree.widget.set_visible(show);
+                    this.sidebar.set_visible(show);
+                    this.header.set_show_start_title_buttons(!show);
                     if show {
                         this.paned.set_position(this.pane_width.get());
                     }
@@ -472,7 +544,8 @@ impl Window {
 
         for action in [
             sort_by,
-            sort_desc,
+            sort_ascending,
+            show_files,
             show_hidden,
             show_pane,
             shuffle,
@@ -563,7 +636,7 @@ impl Window {
         let rotational = storage::is_rotational(&path);
         trace!("storage: rotational = {rotational:?}");
         self.thumbnailer.reset(rotational);
-        self.totals.set((0, 0));
+        self.totals.set([(0, 0); 4]);
         self.scanning.set(true);
         self.update_count_status();
         self.selection_label.set_text("");
@@ -608,7 +681,7 @@ impl Window {
                     ScanMsg::Done(result) => {
                         trace!(
                             "scan done: {} items in {:.1} ms",
-                            this.totals.get().0,
+                            this.store.n_items(),
                             started.elapsed().as_secs_f64() * 1e3
                         );
                         this.scan_done(result);
@@ -628,10 +701,7 @@ impl Window {
     }
 
     fn add_entries(&self, entries: Vec<scan::Entry>) {
-        let (count, bytes) = self.totals.get();
-        let added: u64 = entries.iter().map(|e| e.size).sum();
-        self.totals
-            .set((count + entries.len() as u32, bytes + added));
+        self.tally(&entries, false);
         let items: Vec<FileItem> = entries.into_iter().map(FileItem::new).collect();
         self.thumbnailer.register(&items);
         if self.sort.get().0.needs_meta() {
@@ -700,17 +770,75 @@ impl Window {
                 self.empty.set_description(Some(&error));
                 self.stack.set_visible_child(&self.empty);
             }
-            Ok(()) if self.totals.get().0 == 0 => {
-                self.empty.set_title("Empty Folder");
-                self.empty.set_description(None);
-                self.stack.set_visible_child(&self.empty);
-            }
-            Ok(()) => {}
+            Ok(()) => self.update_empty(),
         }
     }
 
-    fn set_sort(&self, key: SortKey, descending: bool) {
-        self.sort.set((key, descending));
+    /// Adds entries to the folder's totals, or subtracts them if `removed`.
+    fn tally<'a>(&self, entries: impl IntoIterator<Item = &'a scan::Entry>, removed: bool) {
+        let mut totals = self.totals.get();
+        for entry in entries {
+            let (count, bytes) = &mut totals[entry.kind as usize];
+            if removed {
+                *count = count.saturating_sub(1);
+                *bytes = bytes.saturating_sub(entry.size);
+            } else {
+                *count += 1;
+                *bytes += entry.size;
+            }
+        }
+        self.totals.set(totals);
+    }
+
+    /// Shows the grid, or a page saying why there is nothing in it.
+    fn update_empty(&self) {
+        if self.scanning.get() || self.selection.n_items() > 0 {
+            self.stack.set_visible_child(&self.grid.scroller);
+            return;
+        }
+        if self.store.n_items() == 0 {
+            self.empty.set_title("Empty Folder");
+            self.empty.set_description(None);
+        } else {
+            self.empty.set_title(match self.show.get() {
+                Show::Pictures => "No Pictures",
+                Show::Videos => "No Videos",
+                _ => "No Pictures or Videos",
+            });
+            self.empty
+                .set_description(Some("Choose “All Files” at the top left to see everything"));
+        }
+        self.stack.set_visible_child(&self.empty);
+    }
+
+    /// Shows only pictures, videos or both (folders always), or everything.
+    fn set_show(&self, show: Show) {
+        if let Some(action) = self
+            .window
+            .lookup_action("show-files")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_state(&show.id().to_variant());
+        }
+        if self.show.replace(show) == show {
+            return;
+        }
+        self.filter.changed(gtk::FilterChange::Different);
+        self.thumbnailer.order_changed();
+        self.update_show_button();
+        self.update_count_status();
+        self.update_empty();
+        self.show_selection_or_top();
+    }
+
+    fn update_show_button(&self) {
+        let show = self.show.get();
+        self.show_label.set_text(show.label());
+        self.show_icon.set_icon_name(Some(show.icon()));
+    }
+
+    fn set_sort(&self, key: SortKey, ascending: bool) {
+        self.sort.set((key, ascending));
         self.end_shuffle();
         if key.needs_meta() {
             let items: Vec<FileItem> = self.store.iter::<FileItem>().flatten().collect();
@@ -759,7 +887,12 @@ impl Window {
             started.elapsed().as_secs_f64() * 1e3
         );
         self.update_sort_button();
-        // The grid would otherwise stay on its old top item, now somewhere else.
+        self.show_selection_or_top();
+    }
+
+    /// After a new order or filter: the grid would otherwise stay on its old
+    /// top item, now somewhere else.
+    fn show_selection_or_top(&self) {
         if self.selection.n_items() > 0 {
             let selected = self.selection.selection();
             let target = if selected.is_empty() {
@@ -780,9 +913,12 @@ impl Window {
                 .set_icon_name(Some("media-playlist-shuffle-symbolic"));
             return;
         }
-        let (key, descending) = self.sort.get();
+        let (key, ascending) = self.sort.get();
         self.sort_label.set_text(key.label());
-        self.sort_icon.set_icon_name(Some(if descending {
+        // Each order keeps the icon it had before the user renamed the
+        // directions: largest first shows an up arrow in Zorin's theme,
+        // which names that icon "descending" (Adwaita draws them the other way).
+        self.sort_icon.set_icon_name(Some(if ascending {
             "view-sort-descending-symbolic"
         } else {
             "view-sort-ascending-symbolic"
@@ -828,14 +964,29 @@ impl Window {
         }
     }
 
+    /// "450 objects [2.1 GB]", or "120 of 450 objects [1.2 GB]" while the
+    /// Show filter hides some (the size is of those shown).
     fn update_count_status(&self) {
-        let (count, bytes) = self.totals.get();
-        let noun = if count == 1 { "object" } else { "objects" };
-        let mut text = format!(
-            "{} {noun} [{}]",
-            group_digits(count.into()),
-            glib::format_size(bytes)
-        );
+        let show = self.show.get();
+        let (mut shown, mut total, mut bytes) = (0u32, 0u32, 0u64);
+        for (kind, (count, size)) in Kind::ALL.into_iter().zip(self.totals.get()) {
+            total += count;
+            if show.includes(kind) {
+                shown += count;
+                bytes += size;
+            }
+        }
+        let noun = if total == 1 { "object" } else { "objects" };
+        let count = if shown == total {
+            group_digits(total.into())
+        } else {
+            format!(
+                "{} of {}",
+                group_digits(shown.into()),
+                group_digits(total.into())
+            )
+        };
+        let mut text = format!("{count} {noun} [{}]", glib::format_size(bytes));
         if self.scanning.get() {
             text.insert_str(0, "Loading… ");
         }
@@ -873,9 +1024,9 @@ impl Window {
     }
 
     fn save_settings(&self) {
-        let (sort_key, sort_desc) = self.sort.get();
+        let (sort_key, sort_ascending) = self.sort.get();
         let (window_width, window_height) = self.window.default_size();
-        let pane_visible = self.tree.widget.is_visible();
+        let pane_visible = self.sidebar.is_visible();
         let startup = self.startup_folder.borrow();
         Settings {
             last_folder: self
@@ -901,7 +1052,8 @@ impl Window {
             pane_visible,
             show_hidden: self.show_hidden.get(),
             sort_key,
-            sort_desc,
+            sort_ascending,
+            show: self.show.get(),
             thumb_size: self.size.value().round() as i32,
             viewer_black: self.viewer_black.get(),
             volume: self.volume.get(),
@@ -937,14 +1089,32 @@ fn sort_menu() -> gio::Menu {
         keys.append_item(&item);
     }
     let order = gio::Menu::new();
-    for (label, descending) in [("Ascending", false), ("Descending", true)] {
+    for (label, ascending) in [("Ascending", true), ("Descending", false)] {
         let item = gio::MenuItem::new(Some(label), None);
-        item.set_action_and_target_value(Some("win.sort-desc"), Some(&descending.to_variant()));
+        item.set_action_and_target_value(Some("win.sort-ascending"), Some(&ascending.to_variant()));
         order.append_item(&item);
     }
     let menu = gio::Menu::new();
     menu.append_section(None, &keys);
     menu.append_section(None, &order);
+    menu
+}
+
+fn show_menu() -> gio::Menu {
+    let media = gio::Menu::new();
+    let all = gio::Menu::new();
+    for show in Show::ALL {
+        let item = gio::MenuItem::new(Some(show.label()), None);
+        item.set_action_and_target_value(Some("win.show-files"), Some(&show.id().to_variant()));
+        if show == Show::All {
+            all.append_item(&item);
+        } else {
+            media.append_item(&item);
+        }
+    }
+    let menu = gio::Menu::new();
+    menu.append_section(None, &media);
+    menu.append_section(None, &all);
     menu
 }
 
