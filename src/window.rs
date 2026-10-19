@@ -596,6 +596,14 @@ impl Window {
             self,
             move |path| this.navigate(path, false)
         ));
+        self.tree.connect_error(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |message| {
+                let toast = adw::Toast::builder().title(message).timeout(8).build();
+                this.toasts.add_toast(toast);
+            }
+        ));
 
         self.selection.connect_selection_changed(glib::clone!(
             #[weak(rename_to = this)]
@@ -776,10 +784,20 @@ impl Window {
         self.update_count_status();
         let startup = self.startup.replace(false);
         match result {
-            // The remembered folder is gone (e.g. its drive isn't mounted): use Home.
+            // The remembered folder can't be opened: mount its drive if it is
+            // one that mounts on first use, else go Home.
             Err(_) if startup => {
+                let Some(folder) = self.current.borrow().clone() else {
+                    return;
+                };
                 let this = self.clone();
-                glib::idle_add_local_once(move || this.navigate(glib::home_dir(), true));
+                self.tree.mount_for(&folder.clone(), move |mounted| {
+                    // Try again as at startup, so a second failure lands on Home.
+                    this.current.replace(None);
+                    this.startup.set(mounted);
+                    let target = if mounted { folder } else { glib::home_dir() };
+                    glib::idle_add_local_once(move || this.navigate(target, true));
+                });
             }
             Err(error) => {
                 self.empty.set_title("Can't Open Folder");

@@ -41,6 +41,8 @@
       <description>
         <ul>
           <li>Thumbnail padding now sets the space between columns too, not only between rows</li>
+          <li>The folder tree lists Documents, Pictures and the other folders in Home, and every drive and phone, like Files; drives that aren't mounted yet mount when opened</li>
+          <li>If the folder FastViz opens at startup is on a drive that isn't mounted yet, the drive is mounted first</li>
           <li>Larger app icon, closer in size to other apps in the taskbar</li>
         </ul>
       </description>
