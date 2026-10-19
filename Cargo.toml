@@ -29,6 +29,11 @@ ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec"
 [profile.release]
 lto = "thin"
 
+# Release settings in their own folder (target/deb), so the .deb build's
+# path remapping doesn't force the everyday release build to recompile.
+[profile.deb]
+inherits = "release"
+
 # `scripts/build-deb.sh` builds the .deb (with cargo-deb).
 [package.metadata.deb]
 copyright = "2026, WastedLookz"
