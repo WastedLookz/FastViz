@@ -19,6 +19,8 @@ pub const MAX_SIZE: i32 = 512;
 const ZOOM_STEP: f64 = 1.1;
 /// Space around each tile (its margins), set in Preferences.
 pub const MAX_PADDING: i32 = 40;
+/// The grid's own CSS padding (style.css), outside the tiles' margins.
+const GRID_PADDING: i32 = 6;
 
 /// Called on right-click with the widget clicked and the point in it.
 type ContextHandler = Box<dyn Fn(&gtk::Widget, f64, f64)>;
@@ -30,6 +32,7 @@ pub struct Grid {
     size: Rc<Cell<i32>>,
     padding: Rc<Cell<i32>>,
     width: Rc<Cell<f64>>,
+    columns: Rc<Columns>,
     thumbnailer: Rc<Thumbnailer>,
     context: Rc<RefCell<Option<ContextHandler>>>,
 }
@@ -182,6 +185,7 @@ impl Grid {
         // fixed max_columns builds a widget for every item and defeats
         // virtualization. Keep it at the number of columns that actually fit.
         let width = Rc::new(Cell::new(0.0));
+        let columns = Rc::new(Columns::new());
         scroller.hadjustment().connect_changed(glib::clone!(
             #[weak]
             view,
@@ -191,13 +195,20 @@ impl Grid {
             current,
             #[strong]
             padding,
-            move |adj| {
-                if width.replace(adj.page_size()) == adj.page_size() {
+            #[strong]
+            columns,
+            move |_| {
+                // The whole width, which the spare padding set below doesn't change.
+                let Some(bounds) = view.compute_bounds(&view) else {
+                    return;
+                };
+                let full = f64::from(bounds.width());
+                if width.replace(full) == full {
                     return;
                 }
                 // This fires during allocation; changing columns then would re-enter layout.
-                let (width, size, padding) = (adj.page_size(), current.get(), padding.get());
-                glib::idle_add_local_once(move || fit_columns(&view, width, size, padding));
+                let (size, padding, columns) = (current.get(), padding.get(), columns.clone());
+                glib::idle_add_local_once(move || columns.fit(&view, full, size, padding));
             }
         ));
 
@@ -208,6 +219,7 @@ impl Grid {
             size: current,
             padding,
             width,
+            columns,
             thumbnailer: thumbnailer.clone(),
             context,
         }
@@ -222,7 +234,8 @@ impl Grid {
         if self.size.replace(size) == size {
             return;
         }
-        fit_columns(&self.view, self.width.get(), size, self.padding.get());
+        self.columns
+            .fit(&self.view, self.width.get(), size, self.padding.get());
         self.thumbnailer.set_size(size);
         self.thumbnailer.queue_sync();
         self.tiles.borrow_mut().retain(|weak| match weak.upgrade() {
@@ -244,7 +257,8 @@ impl Grid {
         if self.padding.replace(padding) == padding {
             return;
         }
-        fit_columns(&self.view, self.width.get(), self.size.get(), padding);
+        self.columns
+            .fit(&self.view, self.width.get(), self.size.get(), padding);
         self.thumbnailer.queue_sync();
         self.tiles.borrow_mut().retain(|weak| match weak.upgrade() {
             Some(tile) => {
@@ -256,11 +270,61 @@ impl Grid {
     }
 }
 
-fn fit_columns(view: &gtk::GridView, width: f64, size: i32, padding: i32) {
-    let columns = (width / f64::from(size + 2 * padding)).floor().max(1.0) as u32;
-    if view.max_columns() != columns {
-        view.set_max_columns(columns);
+/// Keeps every column exactly one tile wide, so the gaps between columns are
+/// the padding, as between rows. GtkGridView stretches its columns to fill
+/// its width, so the width left over goes to the grid's right padding (CSS
+/// padding rather than a margin, so it still takes clicks and rubberbands).
+/// Reloading a stylesheet restyles the whole window and dropped frames while
+/// resizing small thumbnails, so each padding is a class written once.
+struct Columns {
+    spare: Cell<i32>,
+}
+
+impl Columns {
+    fn new() -> Self {
+        let css = gtk::CssProvider::new();
+        // The spare width is always less than one column.
+        let rules: String = (0..=MAX_SIZE + 2 * MAX_PADDING)
+            .map(|spare| {
+                format!(
+                    ".fv-grid.{} {{ padding-right: {}px; }}\n",
+                    spare_class(spare),
+                    GRID_PADDING + spare
+                )
+            })
+            .collect();
+        css.load_from_string(&rules);
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &css,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            );
+        }
+        Self {
+            spare: Cell::new(0),
+        }
     }
+
+    /// `width` is the grid's whole width, its padding included.
+    fn fit(&self, view: &gtk::GridView, width: f64, size: i32, padding: i32) {
+        let inner = width as i32 - 2 * GRID_PADDING;
+        let pitch = size + 2 * padding;
+        let columns = (inner / pitch).max(1);
+        if view.max_columns() != columns as u32 {
+            view.set_max_columns(columns as u32);
+        }
+        let spare = (inner - columns * pitch).max(0);
+        let old = self.spare.replace(spare);
+        if old != spare {
+            view.remove_css_class(&spare_class(old));
+            view.add_css_class(&spare_class(spare));
+        }
+    }
+}
+
+fn spare_class(spare: i32) -> String {
+    format!("fv-spare-{spare}")
 }
 
 /// Dragging a tile hands the files to other apps, as a file manager does:

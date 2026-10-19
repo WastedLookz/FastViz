@@ -53,22 +53,26 @@
   padding: 6px;
 }
 
-/* The space around each tile is its margins (Preferences → Padding). */
-.fv-grid > child {
+/* The space around each tile is its margins (Preferences → Padding).
+   "gridview", not ".fv-grid": the grid's spare-width class changes while
+   resizing, and cells that depend on its classes would be restyled too. */
+gridview > child {
   padding: 0;
   border-radius: 8px;
 }
 
-.fv-grid > child:hover {
+gridview > child:hover {
   background-color: alpha(currentColor, 0.05);
 }
 
-.fv-grid > child:selected {
+gridview > child:selected {
   background-color: alpha(@accent_bg_color, 0.35);
 }
 
+/* Inset a little, so long names stay apart even with no padding. */
 .fv-tile > label {
   font-size: 0.9em;
+  margin: 0 3px;
 }
 
 .fv-badge {
