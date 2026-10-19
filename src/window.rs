@@ -297,7 +297,22 @@ impl Window {
         let start = start.map(PathBuf::from).unwrap_or_else(glib::home_dir);
         match initial {
             Some(path) => this.open_path(path),
-            None => this.navigate(start, true),
+            None => {
+                // After a restart the remembered folder's drive may not be
+                // mounted yet (drives mount on first use): mount it first.
+                let then = glib::clone!(
+                    #[weak]
+                    this,
+                    #[strong]
+                    start,
+                    move |mounted| {
+                        this.navigate(if mounted { start } else { glib::home_dir() }, true)
+                    }
+                );
+                if !this.tree.mount_for(&start, then) {
+                    this.navigate(start, true);
+                }
+            }
         }
         this
     }
@@ -784,20 +799,10 @@ impl Window {
         self.update_count_status();
         let startup = self.startup.replace(false);
         match result {
-            // The remembered folder can't be opened: mount its drive if it is
-            // one that mounts on first use, else go Home.
+            // The remembered folder is gone (e.g. its drive isn't mounted): use Home.
             Err(_) if startup => {
-                let Some(folder) = self.current.borrow().clone() else {
-                    return;
-                };
                 let this = self.clone();
-                self.tree.mount_for(&folder.clone(), move |mounted| {
-                    // Try again as at startup, so a second failure lands on Home.
-                    this.current.replace(None);
-                    this.startup.set(mounted);
-                    let target = if mounted { folder } else { glib::home_dir() };
-                    glib::idle_add_local_once(move || this.navigate(target, true));
-                });
+                glib::idle_add_local_once(move || this.navigate(glib::home_dir(), true));
             }
             Err(error) => {
                 self.empty.set_title("Can't Open Folder");

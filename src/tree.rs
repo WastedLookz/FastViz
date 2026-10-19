@@ -320,10 +320,11 @@ impl FolderTree {
         });
     }
 
-    /// Mounts the drive `path` is on, if it is one waiting in the tree (the
-    /// remembered folder after a restart: drives mount on first use), and
-    /// says whether `path` is reachable now.
-    pub fn mount_for(self: &Rc<Self>, path: &Path, done: impl FnOnce(bool) + 'static) {
+    /// If `path` is on a drive that isn't mounted yet (the remembered folder
+    /// after a restart: drives mount on first use), mounts it and returns
+    /// true; `done` then says whether `path` is on it. Looks at the tree's
+    /// rows only, no disk access. False, and no call, otherwise.
+    pub fn mount_for(self: &Rc<Self>, path: &Path, done: impl FnOnce(bool) + 'static) -> bool {
         // udisks mounts drives at /media/<user>/<label>, or /run/media/... on some systems.
         let user = glib::user_name();
         let node = self
@@ -337,13 +338,13 @@ impl FolderTree {
                     .any(|base| path.starts_with(Path::new(base).join(&user).join(node.name())))
             });
         let Some(node) = node else {
-            done(false);
-            return;
+            return false;
         };
         let path = path.to_owned();
         self.mount_volume(&node, move |_, mounted| {
             done(mounted.is_some_and(|mounted| path.starts_with(mounted)));
         });
+        true
     }
 
     /// Mounts an unmounted drive or phone, then calls `then` with where it
