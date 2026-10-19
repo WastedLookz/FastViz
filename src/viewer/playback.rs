@@ -129,6 +129,17 @@ fn background(black: bool) -> &'static str {
     if black { "#000000" } else { "#1e1e1e" }
 }
 
+/// The option that sets it: `background` up to mpv 0.37 (client API 2.2),
+/// `background-color` from 0.38 on (the Flatpak's mpv), where `background`
+/// became a mode.
+fn background_option() -> &'static str {
+    if crate::mpv::api_version() >= (2, 3) {
+        "background-color"
+    } else {
+        "background"
+    }
+}
+
 /// "1:05" or "1:02:03".
 fn clock(seconds: f64) -> String {
     let total = seconds.max(0.0) as u64;
@@ -438,7 +449,7 @@ impl Playback {
     pub fn set_black(&self, black: bool) {
         self.black.set(black);
         if let Some(player) = self.player.borrow().as_ref() {
-            player.set_string("background", background(black));
+            player.set_string(background_option(), background(black));
         }
     }
 
@@ -484,6 +495,8 @@ impl Playback {
             ("cscale", "bilinear"),
             ("osd-level", "0"),
             ("load-scripts", "no"),
+            // Only in builds with Lua scripting (not the Flatpak's): a
+            // warning there.
             ("ytdl", "no"),
             // Don't look for subtitle, audio or cover files next to each clip
             // (extra metadata reads on slow drives).
@@ -493,7 +506,7 @@ impl Playback {
             ("audio-display", "no"),
             ("volume-max", "100"),
             ("volume", volume.as_str()),
-            ("background", background(self.black.get())),
+            (background_option(), background(self.black.get())),
         ];
         let mut player = match Player::new(&options) {
             Ok(player) => player,

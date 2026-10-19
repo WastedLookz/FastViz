@@ -97,6 +97,7 @@ const LC_NUMERIC: c_int = 1;
 
 #[link(name = "mpv")]
 unsafe extern "C" {
+    fn mpv_client_api_version() -> std::ffi::c_ulong;
     fn mpv_create() -> *mut Handle;
     fn mpv_initialize(ctx: *mut Handle) -> c_int;
     fn mpv_terminate_destroy(ctx: *mut Handle);
@@ -197,6 +198,13 @@ pub enum Event {
         value: Value,
     },
     Shutdown,
+}
+
+/// The client API version of the libmpv in use, as (major, minor).
+pub fn api_version() -> (u32, u32) {
+    // SAFETY: no arguments, no state.
+    let version = unsafe { mpv_client_api_version() };
+    ((version >> 16) as u32, (version & 0xffff) as u32)
 }
 
 /// The playback core: one per process, created on first use.
