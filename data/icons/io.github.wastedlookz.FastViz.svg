@@ -33,8 +33,12 @@
     </filter>
   </defs>
 
-  <!-- App Icon Base (Standard Squircle) -->
-  <rect x="40" y="40" width="432" height="432" rx="100" fill="url(#bg)" filter="url(#shadow)" />
+  <!-- App Icon Base (Standard Squircle), nearly the whole canvas: on a dark
+       panel it barely shows, so the artwork inside sets the apparent size -->
+  <rect x="6" y="6" width="500" height="500" rx="116" fill="url(#bg)" />
+
+  <!-- Artwork 35% larger than first drawn, to match other taskbar icons -->
+  <g transform="translate(256, 256) scale(1.35) translate(-256, -256)">
 
   <!-- Dynamic Geometry (Fast/Viz motif) -->
   <!-- We apply a skew to the group to create forward momentum, maintaining a structural 3D-like mesh layout -->
@@ -60,4 +64,6 @@
   
   <!-- Lens Glint -->
   <circle cx="266" cy="246" r="10" fill="#ffffff" opacity="0.85" />
+
+  </g>
 </svg>
