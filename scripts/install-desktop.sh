@@ -50,4 +50,8 @@ case "${1:-}" in
     ;;
 esac
 update-desktop-database "$data/applications" 2>/dev/null || true
-gtk-update-icon-cache -q -t "$data/icons/hicolor" 2>/dev/null || true
+# Refresh the user icon cache only if there is one: GTK trusts a cache over
+# the folder, so a stale one hides icons added or removed without it.
+if [ -f "$data/icons/hicolor/icon-theme.cache" ]; then
+    gtk-update-icon-cache -q -f -t "$data/icons/hicolor" 2>/dev/null || true
+fi
