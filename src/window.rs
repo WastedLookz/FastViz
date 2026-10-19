@@ -45,9 +45,8 @@ pub struct Window {
     filter: gtk::CustomFilter,
     show_label: gtk::Label,
     show_icon: gtk::Image,
-    /// The thumbnail area's header, and the folder pane under its own.
-    header: adw::HeaderBar,
-    sidebar: adw::ToolbarView,
+    /// Sits before the Show button, as wide as the folder pane.
+    show_spacer: gtk::Box,
     crumbs: gtk::Box,
     count_label: gtk::Label,
     selection_label: gtk::Label,
@@ -178,32 +177,24 @@ impl Window {
             .menu_model(&show_menu())
             .tooltip_text("Show")
             .build();
+        // Show floats over the grid's left edge: the spacer before it is as
+        // wide as the folder pane (`align_show_button`).
+        let show_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let show_start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        show_start.append(&show_spacer);
+        show_start.append(&show_button);
         let header = adw::HeaderBar::builder()
             .title_widget(&crumb_scroller)
-            // The folder pane's header has them while it is shown.
-            .show_start_title_buttons(!settings.pane_visible)
             .build();
-        header.pack_start(&show_button);
+        header.pack_start(&show_start);
         header.pack_end(&menu_button);
         header.pack_end(&sort_button);
-        let main = adw::ToolbarView::new();
-        main.add_top_bar(&header);
-        main.set_content(Some(&stack));
 
-        // The folder pane has its own (empty) header, so the thumbnail
-        // area's header starts where the grid does.
-        let sidebar_header = adw::HeaderBar::builder()
-            .title_widget(&gtk::Label::new(None))
-            .show_end_title_buttons(false)
-            .build();
-        let sidebar = adw::ToolbarView::new();
-        sidebar.add_top_bar(&sidebar_header);
-        sidebar.set_content(Some(&tree.widget));
-        sidebar.set_visible(settings.pane_visible);
+        tree.widget.set_visible(settings.pane_visible);
         let paned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .start_child(&sidebar)
-            .end_child(&main)
+            .start_child(&tree.widget)
+            .end_child(&stack)
             .resize_start_child(false)
             .shrink_start_child(false)
             .shrink_end_child(false)
@@ -214,6 +205,9 @@ impl Window {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.append(&paned);
         content.append(&statusbar);
+        let view = adw::ToolbarView::new();
+        view.add_top_bar(&header);
+        view.set_content(Some(&content));
         let slideshow = SlideshowOptions {
             interval: settings.slideshow_interval.clamp(1.0, 60.0),
             repeat: settings.slideshow_loop,
@@ -226,7 +220,7 @@ impl Window {
             slideshow,
         );
         let pages = gtk::Stack::new();
-        pages.add_named(&content, Some("browser"));
+        pages.add_named(&view, Some("browser"));
         pages.add_named(&viewer.widget, Some("viewer"));
         // Toasts (like Trash with Undo) show over both pages.
         let toasts = adw::ToastOverlay::new();
@@ -260,8 +254,7 @@ impl Window {
             filter,
             show_label,
             show_icon,
-            header,
-            sidebar,
+            show_spacer,
             crumbs,
             count_label,
             selection_label,
@@ -294,6 +287,7 @@ impl Window {
         this.connect_signals();
         this.update_sort_button();
         this.update_show_button();
+        this.align_show_button();
 
         let start = if settings.open_last_folder {
             settings.last_folder.as_ref()
@@ -471,11 +465,11 @@ impl Window {
                     if !show {
                         this.pane_width.set(this.paned.position());
                     }
-                    this.sidebar.set_visible(show);
-                    this.header.set_show_start_title_buttons(!show);
+                    this.tree.widget.set_visible(show);
                     if show {
                         this.paned.set_position(this.pane_width.get());
                     }
+                    this.align_show_button();
                 }
             ),
         );
@@ -599,6 +593,20 @@ impl Window {
             #[weak(rename_to = this)]
             self,
             move |_, _, _| this.update_selection_status()
+        ));
+
+        // Show follows the pane divider; after layout, as the paned can
+        // report a new position while allocating.
+        self.paned.connect_position_notify(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| {
+                glib::idle_add_local_once(glib::clone!(
+                    #[weak]
+                    this,
+                    move || this.align_show_button()
+                ));
+            }
         ));
 
         self.size.connect_value_changed(glib::clone!(
@@ -831,6 +839,21 @@ impl Window {
         self.show_selection_or_top();
     }
 
+    /// Keeps the Show button over the grid's left edge: the header and the
+    /// grid start at the same x, so the spacer is as wide as the pane plus
+    /// the handle after it.
+    fn align_show_button(&self) {
+        let width = if self.tree.widget.get_visible() {
+            let handle = std::iter::successors(self.paned.first_child(), |w| w.next_sibling())
+                .find(|w| w.css_name() == "separator")
+                .map_or(0, |w| w.measure(gtk::Orientation::Horizontal, -1).0);
+            self.paned.position() + handle
+        } else {
+            0
+        };
+        self.show_spacer.set_width_request(width);
+    }
+
     fn update_show_button(&self) {
         let show = self.show.get();
         self.show_label.set_text(show.label());
@@ -1026,7 +1049,7 @@ impl Window {
     fn save_settings(&self) {
         let (sort_key, sort_ascending) = self.sort.get();
         let (window_width, window_height) = self.window.default_size();
-        let pane_visible = self.sidebar.is_visible();
+        let pane_visible = self.tree.widget.get_visible();
         let startup = self.startup_folder.borrow();
         Settings {
             last_folder: self
