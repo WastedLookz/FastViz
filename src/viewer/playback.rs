@@ -477,6 +477,10 @@ impl Playback {
             ("keep-open", "yes"),
             // Never block our render call waiting for a frame's display time.
             ("video-timing-offset", "0"),
+            // mpv 0.37's default Lanczos chroma scaling garbles the color
+            // plane of NV12 frames (all VA-API output) at some sizes here,
+            // e.g. 1440x1440 and 4K phone clips: diagonal blue/orange streaks.
+            ("cscale", "bilinear"),
             ("osd-level", "0"),
             ("load-scripts", "no"),
             ("ytdl", "no"),
