@@ -25,17 +25,27 @@ a simple, modern GTK 4 look.
 
 ## Install
 
-Download the `.deb` from the
-[Releases](https://github.com/WastedLookz/FastViz/releases) page and open it,
-or install it from a terminal:
+Both packages are on the
+[Releases](https://github.com/WastedLookz/FastViz/releases) page.
+
+**Flatpak** (most distributions): download `fastviz_0.1.1_x86_64.flatpak` and
+open it in Software, or install it from a terminal:
+
+```sh
+flatpak install --user ./fastviz_0.1.1_x86_64.flatpak
+```
+
+It needs [Flathub](https://flathub.org/setup) set up, for the GNOME runtime it
+runs on. FastViz itself is not on Flathub, so it doesn't update on its own:
+install the next release's file the same way.
+
+**Debian package** for **Ubuntu 24.04** and distributions based on it (Zorin
+OS 18, Linux Mint 22, Pop!_OS 24.04), using the system's GTK, mpv and FFmpeg:
+download `fastviz_0.1.1-1_amd64.deb` and open it, or:
 
 ```sh
 sudo apt install ./fastviz_0.1.1-1_amd64.deb
 ```
-
-The package is built for **Ubuntu 24.04** and distributions based on it
-(Zorin OS 18, Linux Mint 22, Pop!_OS 24.04). It uses the system's GTK 4.14,
-libadwaita 1.5, mpv and FFmpeg 6.1 libraries.
 
 ## Build from source
 
@@ -61,10 +71,11 @@ cargo build --release
 ### Flatpak
 
 `flatpak/` holds the Flatpak manifest (GNOME 51 runtime; it builds mpv and
-libheif too). With the Flatpak builder from Flathub:
+libheif too). With the Flatpak builder from Flathub
+(`flatpak install flathub org.flatpak.Builder`), `scripts/build-flatpak.sh`
+builds the `.flatpak` file, or install straight from the checkout:
 
 ```sh
-flatpak install flathub org.flatpak.Builder
 flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
     --force-clean target/flatpak flatpak/io.github.wastedlookz.FastViz.yml
 ```
