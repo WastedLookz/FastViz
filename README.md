@@ -7,9 +7,12 @@ external drives, and keeps a thumbnail cache so folders you have visited
 before show up at once. It aims for the speed of FastStone Image Viewer with
 a simple, modern GTK 4 look.
 
+![FastViz showing a folder of photos](data/screenshots/main.png)
+
 ## Features
 
 - Folder tree and a thumbnail grid that stays smooth with tens of thousands of files
+- Home folders, every drive and your phone in the folder tree; drives mount when you open them
 - Persistent thumbnail cache; JPEGs use their embedded or scaled-down previews
 - Fullscreen viewer: shrink-to-fit, zoom and pan, next and previous items preloaded
 - Video playback with hardware decoding (VA-API), and video thumbnails
@@ -27,7 +30,7 @@ Download the `.deb` from the
 or install it from a terminal:
 
 ```sh
-sudo apt install ./fastviz_0.1.0-1_amd64.deb
+sudo apt install ./fastviz_0.1.1-1_amd64.deb
 ```
 
 The package is built for **Ubuntu 24.04** and distributions based on it
@@ -54,6 +57,17 @@ cargo build --release
 
 `scripts/install-desktop.sh` adds a launcher for this build to your desktop
 (and lists FastViz under "Open With"); `scripts/build-deb.sh` builds the `.deb`.
+
+### Flatpak
+
+`flatpak/` holds the Flatpak manifest (GNOME 51 runtime; it builds mpv and
+libheif too). With the Flatpak builder from Flathub:
+
+```sh
+flatpak install flathub org.flatpak.Builder
+flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
+    --force-clean target/flatpak flatpak/io.github.wastedlookz.FastViz.yml
+```
 
 ## Keys
 

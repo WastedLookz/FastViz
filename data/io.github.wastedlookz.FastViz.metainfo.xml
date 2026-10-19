@@ -17,6 +17,7 @@
     </p>
     <ul>
       <li>Folder tree and a thumbnail grid that stays smooth with tens of thousands of files</li>
+      <li>Home folders, every drive and your phone in the folder tree; drives mount when you open them</li>
       <li>Fullscreen viewer with zoom, and the next and previous items preloaded</li>
       <li>Video playback with hardware decoding</li>
       <li>JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC/HEIF and AVIF photos, and nearly any video format</li>
@@ -26,8 +27,27 @@
     </ul>
   </description>
   <launchable type="desktop-id">io.github.wastedlookz.FastViz.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Folder tree and thumbnail grid</caption>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.1.1/data/screenshots/main.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Fullscreen viewer with the info overlay</caption>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.1.1/data/screenshots/viewer.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Larger thumbnails</caption>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.1.1/data/screenshots/grid.png</image>
+    </screenshot>
+  </screenshots>
   <url type="homepage">https://github.com/WastedLookz/FastViz</url>
   <url type="bugtracker">https://github.com/WastedLookz/FastViz/issues</url>
+  <url type="vcs-browser">https://github.com/WastedLookz/FastViz</url>
+  <branding>
+    <color type="primary" scheme_preference="light">#c9d4f5</color>
+    <color type="primary" scheme_preference="dark">#4b3b7a</color>
+  </branding>
   <provides>
     <binary>fastviz</binary>
   </provides>
@@ -35,6 +55,9 @@
     <control>pointing</control>
     <control>keyboard</control>
   </supports>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
   <content_rating type="oars-1.1"/>
   <releases>
     <release version="0.1.1" date="2026-10-19">

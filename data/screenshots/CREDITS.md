@@ -1,0 +1,37 @@
+# Screenshot credits
+
+The photos in these screenshots are from Wikimedia Commons and are in the
+public domain or under CC0 (no rights reserved). Two clips in the first
+screenshot were made from two of these photos.
+
+- Travel/Alone in the unspoilt wilderness.jpg: https://commons.wikimedia.org/wiki/File:Alone_in_the_unspoilt_wilderness_(Unsplash).jpg (CC0)
+- Travel/Iceberg in North Star Bay, Greenland.jpg: https://commons.wikimedia.org/wiki/File:Iceberg_in_North_Star_Bay,_Greenland.jpg (Public domain)
+- Travel/Komargorod pond.jpg: https://commons.wikimedia.org/wiki/File:Komargorod_pond_2013_G3.jpg (Public domain)
+- Travel/Mount Ida chain Messara plain from Phaistos Cret.jpg: https://commons.wikimedia.org/wiki/File:Mount_Ida_chain_Messara_plain_from_Phaistos_Crete_Greece.jpg (CC0)
+- Travel/Carrelet, Esnandes, Charente-Maritime, august 20.jpg: https://commons.wikimedia.org/wiki/File:Carrelet,_Esnandes,_Charente-Maritime,_august_2015.jpg (CC0)
+- Travel/Courtyard Zappeion Athens, Greece.jpg: https://commons.wikimedia.org/wiki/File:Courtyard_Zappeion_Athens,_Greece.jpg (CC0)
+- Travel/Luxembourg City Hall.jpg: https://commons.wikimedia.org/wiki/File:Luxembourg_City_Hall_(54540726309).jpg (CC0)
+- Travel/Partal pavilion bassin detail 1 edit.jpg: https://commons.wikimedia.org/wiki/File:Partal_pavilion_bassin_detail_1_edit.jpg (CC0)
+- Travel/Patio de los Arrayanes detail Alhambra Granada S.jpg: https://commons.wikimedia.org/wiki/File:Patio_de_los_Arrayanes_detail_Alhambra_Granada_Spain.jpg (CC0)
+- Travel/Pavillon Cour des Lions Alhambra Granada Spain.jpg: https://commons.wikimedia.org/wiki/File:Pavillon_Cour_des_Lions_Alhambra_Granada_Spain.jpg (CC0)
+- Travel/Piazzetta San Marco Venice BLS.jpg: https://commons.wikimedia.org/wiki/File:Piazzetta_San_Marco_Venice_BLS.jpg (Public domain)
+- Travel/Portico gallery perspective École Militaire Cour.jpg: https://commons.wikimedia.org/wiki/File:Portico_gallery_perspective_%C3%89cole_Militaire_Cour_d%27Honneur_Paris.jpg (CC0)
+- Travel/Lake-sherburne-964855.jpg: https://commons.wikimedia.org/wiki/File:Lake-sherburne-964855.jpg (Public domain)
+- Travel/Lindenstumpf, Panorama, 2.jpg: https://commons.wikimedia.org/wiki/File:Lindenstumpf,_Panorama,_2.jpg (Public domain)
+- Travel/Gare fluviale de Québec, Quebec city, Canada.jpg: https://commons.wikimedia.org/wiki/File:Gare_fluviale_de_Qu%C3%A9bec,_Quebec_city,_Canada.jpg (CC0)
+- Travel/Grand Canyon South Rim at Sunset.jpg: https://commons.wikimedia.org/wiki/File:Grand_Canyon_South_Rim_at_Sunset.jpg (CC0)
+- Travel/Sunset over Trommekilen from Norrkila 6.jpg: https://commons.wikimedia.org/wiki/File:Sunset_over_Trommekilen_from_Norrkila_6.jpg (CC0)
+- Travel/The Atomium, Brussels - 54578545913.jpg: https://commons.wikimedia.org/wiki/File:The_Atomium,_Brussels_-_54578545913.jpg (CC0)
+- Travel/Utah Dunes Landscape - West Desert District.jpg: https://commons.wikimedia.org/wiki/File:Utah_Dunes_Landscape_-_West_Desert_District.jpg (Public domain)
+- Garden/Apple-tree blossoms.jpg: https://commons.wikimedia.org/wiki/File:Apple-tree_blossoms_2017_G3.jpg (Public domain)
+- Garden/Common Blue-Sow-Thistle in a patch of sunlight.jpg: https://commons.wikimedia.org/wiki/File:Common_Blue-Sow-Thistle_in_a_patch_of_sunlight.jpg (CC0)
+- Garden/Field Bindweed in Brodalen.jpg: https://commons.wikimedia.org/wiki/File:Field_Bindweed_in_Brodalen.jpg (CC0)
+- Garden/French marigold garden.jpg: https://commons.wikimedia.org/wiki/File:French_marigold_garden_2009_G1.jpg (Public domain)
+- Garden/Hemerocallis fulva.jpg: https://commons.wikimedia.org/wiki/File:Hemerocallis_fulva_2016_G1.jpg (Public domain)
+- Garden/Lotus flower.jpg: https://commons.wikimedia.org/wiki/File:Lotus_flower_(978659).jpg (CC0)
+- Garden/Lupinus polyphyllus UA.jpg: https://commons.wikimedia.org/wiki/File:Lupinus_polyphyllus_UA_2015_G5.jpg (Public domain)
+- Garden/Magnolia liliiflora.jpg: https://commons.wikimedia.org/wiki/File:Magnolia_liliiflora_2015_G1.jpg (Public domain)
+- Garden/Poppies bouquet.jpg: https://commons.wikimedia.org/wiki/File:Poppies_bouquet_2017_G1.jpg (Public domain)
+- Garden/Sunflower head.jpg: https://commons.wikimedia.org/wiki/File:Sunflower_head_2015_G1.jpg (Public domain)
+- Garden/Bladder wrack in Sämstad harbor 1.jpg: https://commons.wikimedia.org/wiki/File:Bladder_wrack_in_S%C3%A4mstad_harbor_1.jpg (CC0)
+- Garden/Oakmoss at Myrstigen 3.jpg: https://commons.wikimedia.org/wiki/File:Oakmoss_at_Myrstigen_3.jpg (CC0)
