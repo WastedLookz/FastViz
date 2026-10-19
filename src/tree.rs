@@ -107,6 +107,23 @@ impl FolderTree {
         self.on_context.replace(Some(Box::new(f)));
     }
 
+    /// The folder selected in the tree (normally the open one).
+    pub fn selected_folder(&self) -> Option<PathBuf> {
+        let row = self
+            .selection
+            .selected_item()
+            .and_downcast::<gtk::TreeListRow>()?;
+        Some(row.item().and_downcast::<FolderNode>()?.path().to_owned())
+    }
+
+    /// Whether `path` is Home, a drive or Computer, wherever it shows up in the tree.
+    pub fn is_root(&self, path: &Path) -> bool {
+        self.roots
+            .iter::<FolderNode>()
+            .flatten()
+            .any(|root| root.path() == path)
+    }
+
     /// The deepest root containing `path` and its display name.
     pub fn root_for(&self, path: &Path) -> (PathBuf, String) {
         self.roots

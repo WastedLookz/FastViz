@@ -2,12 +2,14 @@
 //! restoring from the trash. Results stream back as `Report`s.
 //!
 //! Nothing is ever overwritten: a name that is taken in the destination gets
-//! " (2)", " (3)", ... before its extension.
+//! " (2)", " (3)", ... before its extension. Drives are never moved, trashed
+//! or deleted, nor folders with a drive mounted inside.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
 use gtk::gio;
@@ -40,10 +42,14 @@ impl Op {
 }
 
 pub enum Report {
+    /// About to handle item `done` (of `total`), called `name`.
     Progress {
         done: usize,
         total: usize,
+        name: String,
     },
+    /// Files copied so far within the current item (a folder being copied).
+    Files(usize),
     /// A file or folder now exists (pasted, renamed, restored).
     Added(Entry),
     /// No longer in its folder (moved away, trashed, deleted, renamed).
@@ -85,15 +91,32 @@ fn run(op: Op, tx: &async_channel::Sender<Report>) -> usize {
             send(Report::Added(entry));
         }
     };
+    let progress = |done: usize, paths: &[PathBuf]| {
+        send(Report::Progress {
+            done,
+            total: paths.len(),
+            name: paths[done]
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        });
+    };
+    // Counts files copied, for progress in the status bar.
+    let counter = || {
+        let mut files = 0;
+        move || {
+            files += 1;
+            send(Report::Files(files));
+        }
+    };
+    let drives = mount_points();
     let mut succeeded = 0;
     match op {
         Op::Copy(sources, dir) => {
             for (done, source) in sources.iter().enumerate() {
-                send(Report::Progress {
-                    done,
-                    total: sources.len(),
-                });
-                match copy_into(source, &dir) {
+                progress(done, &sources);
+                match copy_into(source, &dir, &mut counter()) {
                     Ok(target) => {
                         succeeded += 1;
                         added(&target);
@@ -104,15 +127,14 @@ fn run(op: Op, tx: &async_channel::Sender<Report>) -> usize {
         }
         Op::Move(sources, dir) => {
             for (done, source) in sources.iter().enumerate() {
-                send(Report::Progress {
-                    done,
-                    total: sources.len(),
-                });
+                progress(done, &sources);
                 if source.parent() == Some(dir.as_path()) {
                     succeeded += 1;
                     continue;
                 }
-                match move_into(source, &dir) {
+                match check_no_drive(source, &drives)
+                    .and_then(|()| move_into(source, &dir, &mut counter()))
+                {
                     Ok(target) => {
                         succeeded += 1;
                         send(Report::Moved {
@@ -129,10 +151,11 @@ fn run(op: Op, tx: &async_channel::Sender<Report>) -> usize {
         Op::Trash(paths) => {
             let mut no_trash = Vec::new();
             for (done, path) in paths.iter().enumerate() {
-                send(Report::Progress {
-                    done,
-                    total: paths.len(),
-                });
+                progress(done, &paths);
+                if let Err(e) = check_no_drive(path, &drives) {
+                    send(failed(path, e));
+                    continue;
+                }
                 match gio::File::for_path(path).trash(None::<&gio::Cancellable>) {
                     Ok(()) => {
                         succeeded += 1;
@@ -153,11 +176,8 @@ fn run(op: Op, tx: &async_channel::Sender<Report>) -> usize {
         }
         Op::Delete(paths) => {
             for (done, path) in paths.iter().enumerate() {
-                send(Report::Progress {
-                    done,
-                    total: paths.len(),
-                });
-                match remove(path) {
+                progress(done, &paths);
+                match check_no_drive(path, &drives).and_then(|()| remove(path)) {
                     Ok(()) => {
                         succeeded += 1;
                         send(Report::Removed(path.clone()));
@@ -206,6 +226,53 @@ fn failed(path: &Path, error: io::Error) -> Report {
     }
 }
 
+/// Mount points from the kernel's table.
+fn mount_points() -> Vec<PathBuf> {
+    let Ok(table) = fs::read("/proc/self/mounts") else {
+        return Vec::new();
+    };
+    table
+        .split(|&b| b == b'\n')
+        .filter_map(|line| line.split(|&b| b == b' ').nth(1))
+        .map(unescape)
+        .collect()
+}
+
+/// The mount table writes spaces, tabs, newlines and backslashes as `\ooo`.
+fn unescape(field: &[u8]) -> PathBuf {
+    let mut out = Vec::with_capacity(field.len());
+    let mut i = 0;
+    while i < field.len() {
+        let octal = field
+            .get(i + 1..i + 4)
+            .filter(|_| field[i] == b'\\')
+            .and_then(|digits| std::str::from_utf8(digits).ok())
+            .and_then(|digits| u8::from_str_radix(digits, 8).ok());
+        match octal {
+            Some(byte) => {
+                out.push(byte);
+                i += 4;
+            }
+            None => {
+                out.push(field[i]);
+                i += 1;
+            }
+        }
+    }
+    PathBuf::from(OsString::from_vec(out))
+}
+
+/// Refuses a drive's mount point or a folder with one inside: moving it to
+/// another drive would copy the drive and then delete it, and the Trash or
+/// Delete would empty it.
+fn check_no_drive(path: &Path, drives: &[PathBuf]) -> io::Result<()> {
+    match drives.iter().find(|mount| mount.starts_with(path)) {
+        Some(mount) if mount == path => Err(io::Error::other("it's a mounted drive")),
+        Some(_) => Err(io::Error::other("a drive is mounted inside it")),
+        None => Ok(()),
+    }
+}
+
 /// `dir/name`, or `dir/stem (2).ext` and so on if that is taken.
 fn unique_path(dir: &Path, name: &OsStr) -> PathBuf {
     let candidate = dir.join(name);
@@ -223,7 +290,7 @@ fn unique_path(dir: &Path, name: &OsStr) -> PathBuf {
         .expect("some numbered name is free")
 }
 
-fn copy_into(source: &Path, dir: &Path) -> io::Result<PathBuf> {
+fn copy_into(source: &Path, dir: &Path, copied: &mut dyn FnMut()) -> io::Result<PathBuf> {
     if dir.starts_with(source) {
         return Err(io::Error::other("can't copy a folder into itself"));
     }
@@ -231,22 +298,24 @@ fn copy_into(source: &Path, dir: &Path) -> io::Result<PathBuf> {
         .file_name()
         .ok_or_else(|| io::Error::other("no file name"))?;
     let target = unique_path(dir, name);
-    copy_tree(source, &target)?;
+    copy_tree(source, &target, copied)?;
     Ok(target)
 }
 
-/// Copies a file (keeping its dates and permissions) or a folder recursively.
-fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
+/// Copies a file (keeping its dates and permissions) or a folder
+/// recursively, calling `copied` after each file.
+fn copy_tree(source: &Path, target: &Path, copied: &mut dyn FnMut()) -> io::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.is_dir() {
         fs::create_dir(target)?;
         for entry in fs::read_dir(source)? {
             let entry = entry?;
-            copy_tree(&entry.path(), &target.join(entry.file_name()))?;
+            copy_tree(&entry.path(), &target.join(entry.file_name()), copied)?;
         }
-        Ok(())
-    } else if metadata.file_type().is_symlink() {
-        std::os::unix::fs::symlink(fs::read_link(source)?, target)
+        return Ok(());
+    }
+    if metadata.file_type().is_symlink() {
+        std::os::unix::fs::symlink(fs::read_link(source)?, target)?;
     } else {
         gio::File::for_path(source)
             .copy(
@@ -255,11 +324,13 @@ fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
                 None::<&gio::Cancellable>,
                 None,
             )
-            .map_err(|e| io::Error::other(e.message().to_owned()))
+            .map_err(|e| io::Error::other(e.message().to_owned()))?;
     }
+    copied();
+    Ok(())
 }
 
-fn move_into(source: &Path, dir: &Path) -> io::Result<PathBuf> {
+fn move_into(source: &Path, dir: &Path, copied: &mut dyn FnMut()) -> io::Result<PathBuf> {
     if dir.starts_with(source) {
         return Err(io::Error::other("can't move a folder into itself"));
     }
@@ -271,7 +342,7 @@ fn move_into(source: &Path, dir: &Path) -> io::Result<PathBuf> {
         Ok(()) => Ok(target),
         // Another drive: copy, and remove the original only once that worked.
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
-            copy_tree(source, &target)?;
+            copy_tree(source, &target, copied)?;
             remove(source)?;
             Ok(target)
         }
@@ -362,14 +433,31 @@ mod tests {
         fs::create_dir_all(&dst).unwrap();
         fs::write(src.join("inner/photo.jpg"), b"jpeg").unwrap();
 
-        let copied = copy_into(&src, &dst).unwrap();
+        let mut files = 0;
+        let copied = copy_into(&src, &dst, &mut || files += 1).unwrap();
         assert_eq!(fs::read(copied.join("inner/photo.jpg")).unwrap(), b"jpeg");
-        let again = copy_into(&src, &dst).unwrap();
+        assert_eq!(files, 1);
+        let again = copy_into(&src, &dst, &mut || {}).unwrap();
         assert_eq!(again, dst.join("src (2)"));
-        assert!(copy_into(&src, &src.join("inner")).is_err());
+        assert!(copy_into(&src, &src.join("inner"), &mut || {}).is_err());
 
-        let moved = move_into(&src, &dst.join("src (2)")).unwrap();
+        let moved = move_into(&src, &dst.join("src (2)"), &mut || {}).unwrap();
         assert!(!src.exists() && moved.join("inner/photo.jpg").exists());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn drives_are_left_alone() {
+        assert_eq!(
+            unescape(br"/media/k/My\040Drive"),
+            Path::new("/media/k/My Drive")
+        );
+        assert_eq!(unescape(br"/a\b"), Path::new(r"/a\b"));
+        let drives = mount_points();
+        assert!(drives.iter().any(|m| m == Path::new("/proc")));
+        assert!(check_no_drive(Path::new("/proc"), &drives).is_err());
+        assert!(check_no_drive(Path::new("/"), &drives).is_err());
+        let dir = std::env::temp_dir().join(format!("fastviz-drive-{}", std::process::id()));
+        assert!(check_no_drive(&dir, &drives).is_ok());
     }
 }

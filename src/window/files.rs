@@ -1,7 +1,7 @@
-//! Cut, copy, paste, rename and delete in the grid: the actions, their
-//! shortcuts and context menus (grid tiles, and Paste Into Folder on tree
-//! rows), the clipboard, and running `fileops` jobs with progress, in-place
-//! grid and tree updates and undo.
+//! Cut, copy, paste, rename and delete in the grid, and cut, copy and paste
+//! of folders in the tree: the actions, their shortcuts and context menus,
+//! the clipboard, and running `fileops` jobs with progress, in-place grid and
+//! tree updates and undo.
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib, graphene};
 
-use super::{Window, display_name};
+use super::{Window, display_name, group_digits};
 use crate::fileops::{self, Op, Report};
 use crate::grid;
 use crate::media::Kind;
@@ -21,6 +21,9 @@ use crate::scan;
 
 /// GNOME's clipboard format telling a paste whether to copy or move.
 const COPIED_FILES: &str = "x-special/gnome-copied-files";
+
+/// Something done to a folder from the tree (its menu or keys).
+type FolderAction = fn(&Rc<Window>, PathBuf);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Job {
@@ -57,18 +60,25 @@ impl Window {
         add("cut", |this| this.copy_selection(true));
         add("copy", |this| this.copy_selection(false));
         add("paste", |this| this.paste());
-        let paste_into =
-            gio::SimpleAction::new("paste-into", Some(&PathBuf::static_variant_type()));
-        paste_into.connect_activate(glib::clone!(
-            #[weak(rename_to = this)]
-            self,
-            move |_, folder| {
-                if let Some(folder) = folder.and_then(PathBuf::from_variant) {
-                    this.paste_into(folder);
+        // Folder actions from the tree's menu, with the folder as target.
+        let add_for_folder = |name: &str, run: FolderAction| {
+            let action = gio::SimpleAction::new(name, Some(&PathBuf::static_variant_type()));
+            action.connect_activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_, folder| {
+                    if let Some(folder) = folder.and_then(PathBuf::from_variant) {
+                        run(&this, folder);
+                    }
                 }
-            }
-        ));
-        self.window.add_action(&paste_into);
+            ));
+            self.window.add_action(&action);
+        };
+        add_for_folder("cut-folder", |this, folder| this.copy_folder(folder, true));
+        add_for_folder("copy-folder", |this, folder| {
+            this.copy_folder(folder, false)
+        });
+        add_for_folder("paste-into", |this, folder| this.paste_into(folder));
         add("rename", |this| this.rename_selected());
         add("trash", |this| {
             let paths = this.selected_paths();
@@ -99,6 +109,32 @@ impl Window {
         self.grid.scroller.add_controller(grid_keys);
         let pane_keys = shortcuts(&[("BackSpace", "win.go-up"), ("<Alt>Up", "win.go-up")]);
         self.paned.add_controller(pane_keys);
+        // The tree's keys act on its selected folder, which is the open one.
+        let tree_keys = gtk::ShortcutController::new();
+        let tree_bindings: [(&str, FolderAction); 3] = [
+            ("<Control>x", |this, folder| this.copy_folder(folder, true)),
+            ("<Control>c", |this, folder| this.copy_folder(folder, false)),
+            ("<Control>v", |this, folder| this.paste_into(folder)),
+        ];
+        for (trigger, run) in tree_bindings {
+            let action = gtk::CallbackAction::new(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                #[upgrade_or]
+                glib::Propagation::Proceed,
+                move |_, _| {
+                    if let Some(folder) = this.tree.selected_folder() {
+                        run(&this, folder);
+                    }
+                    glib::Propagation::Stop
+                }
+            ));
+            tree_keys.add_shortcut(gtk::Shortcut::new(
+                gtk::ShortcutTrigger::parse_string(trigger),
+                Some(action),
+            ));
+        }
+        self.tree.widget.add_controller(tree_keys);
 
         self.grid.connect_context_menu(glib::clone!(
             #[weak(rename_to = this)]
@@ -110,7 +146,11 @@ impl Window {
             self,
             move |widget, x, y, folder| {
                 let menu = gio::Menu::new();
-                menu.append_item(&paste_into_item(&folder));
+                if !this.tree.is_root(&folder) {
+                    menu.append_item(&folder_item("Cut", "win.cut-folder", &folder));
+                    menu.append_item(&folder_item("Copy", "win.copy-folder", &folder));
+                }
+                menu.append_item(&folder_item("Paste Into Folder", "win.paste-into", &folder));
                 this.popup_menu(&menu, widget, x, y);
             }
         ));
@@ -199,7 +239,18 @@ impl Window {
     }
 
     fn copy_selection(&self, cut: bool) {
-        let paths = self.selected_paths();
+        self.copy_paths(self.selected_paths(), cut);
+    }
+
+    /// Cuts or copies a folder from the tree; Home, the drives and Computer stay put.
+    fn copy_folder(&self, folder: PathBuf, cut: bool) {
+        if !self.tree.is_root(&folder) {
+            self.copy_paths(vec![folder], cut);
+        }
+    }
+
+    /// Puts files on the clipboard, for us and for Files.
+    fn copy_paths(&self, paths: Vec<PathBuf>, cut: bool) {
         if paths.is_empty() {
             return;
         }
@@ -436,19 +487,34 @@ impl Window {
             let mut new_folders: Vec<PathBuf> = Vec::new();
             let mut failures: Vec<(PathBuf, String)> = Vec::new();
             let mut last_flush = Instant::now();
+            // The item in hand (done, total, name), for progress text.
+            let mut item = (0, 0, String::new());
+            let mut last_files = Instant::now();
+            // Where the open folder went, if it (or a folder it is in) moved.
+            let mut follow: Option<PathBuf> = None;
             while let Ok(report) = reports.recv().await {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
                 match report {
-                    Report::Progress { done, total } => {
+                    Report::Progress { done, total, name } => {
                         if last_flush.elapsed() > Duration::from_millis(200) {
                             this.apply(&mut pending);
                             last_flush = Instant::now();
                         }
+                        // A single item only shows progress once it is a folder being copied.
                         if total > 1 {
                             this.count_label
-                                .set_text(&format!("{verb} {} of {total}…", done + 1));
+                                .set_text(&progress_text(verb, done, total, &name, 0));
+                        }
+                        item = (done, total, name);
+                    }
+                    Report::Files(files) => {
+                        if last_files.elapsed() > Duration::from_millis(100) {
+                            let (done, total, name) = &item;
+                            this.count_label
+                                .set_text(&progress_text(verb, *done, *total, name, files));
+                            last_files = Instant::now();
                         }
                     }
                     Report::Added(entry) => {
@@ -461,13 +527,30 @@ impl Window {
                         gone.push(path.clone());
                         pending.removed.insert(path);
                     }
-                    Report::Moved { from, to } => this.thumbnailer.file_moved(&from, &to),
+                    Report::Moved { from, to } => {
+                        this.thumbnailer.file_moved(&from, &to);
+                        if let Some(rest) = this
+                            .current
+                            .borrow()
+                            .as_deref()
+                            .and_then(|current| current.strip_prefix(&from).ok())
+                        {
+                            follow = Some(if rest.as_os_str().is_empty() {
+                                to.clone()
+                            } else {
+                                to.join(rest)
+                            });
+                        }
+                    }
                     Report::Failed { path, error } => failures.push((path, error)),
                     Report::NoTrash(paths) => this.confirm_delete(paths, true),
                     Report::Done { succeeded } => {
                         this.apply(&mut pending);
                         this.tree.update_folders(&new_folders, &gone);
                         this.finish(job, succeeded, &into, gone, &failures, &pending);
+                        if let Some(folder) = follow {
+                            this.navigate(folder, true);
+                        }
                         return;
                     }
                 }
@@ -637,7 +720,7 @@ fn item_menu(folder: Option<&Path>) -> gio::Menu {
     edit.append_item(&menu_item("Copy", "win.copy", "<Control>c"));
     edit.append_item(&menu_item("Paste", "win.paste", "<Control>v"));
     if let Some(folder) = folder {
-        edit.append_item(&paste_into_item(folder));
+        edit.append_item(&folder_item("Paste Into Folder", "win.paste-into", folder));
     }
     let file = gio::Menu::new();
     file.append_item(&menu_item("Rename…", "win.rename", "F2"));
@@ -650,10 +733,27 @@ fn item_menu(folder: Option<&Path>) -> gio::Menu {
     menu
 }
 
-fn paste_into_item(folder: &Path) -> gio::MenuItem {
-    let item = gio::MenuItem::new(Some("Paste Into Folder"), None);
-    item.set_action_and_target_value(Some("win.paste-into"), Some(&folder.to_variant()));
+/// A menu item running `action` on `folder`.
+fn folder_item(label: &str, action: &str, folder: &Path) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some(label), None);
+    item.set_action_and_target_value(Some(action), Some(&folder.to_variant()));
     item
+}
+
+/// "Copying 3 of 12…" or, for a single item, "Copying “Holiday”…"; a folder
+/// being copied adds the files done so far.
+fn progress_text(verb: &str, done: usize, total: usize, name: &str, files: usize) -> String {
+    let mut text = if total > 1 {
+        format!("{verb} {} of {total}…", done + 1)
+    } else {
+        format!("{verb} “{name}”…")
+    };
+    match files {
+        0 => {}
+        1 => text.push_str(" 1 file"),
+        n => text.push_str(&format!(" {} files", group_digits(n as u64))),
+    }
+    text
 }
 
 /// A menu item showing its (grid-local) shortcut.
