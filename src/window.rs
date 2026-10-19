@@ -103,7 +103,7 @@ impl Window {
             0.0,
         );
         let thumbnailer = Thumbnailer::new();
-        let grid = Grid::new(&selection, &size, &thumbnailer);
+        let grid = Grid::new(&selection, &size, settings.thumb_padding, &thumbnailer);
 
         let empty = adw::StatusPage::builder()
             .icon_name("folder-pictures-symbolic")
@@ -493,21 +493,29 @@ impl Window {
                     &this.window,
                     &this.startup_folder,
                     this.current.borrow().clone(),
-                    this.viewer_black.get(),
-                    glib::clone!(
-                        #[weak]
-                        this,
-                        move |black| this.set_viewer_black(black)
-                    ),
-                    this.slideshow.get(),
-                    glib::clone!(
-                        #[weak]
-                        this,
-                        move |options| {
-                            this.slideshow.set(options);
-                            this.viewer.set_slideshow_options(options);
-                        }
-                    ),
+                    prefs::Choices {
+                        padding: this.grid.padding(),
+                        on_padding: Box::new(glib::clone!(
+                            #[weak]
+                            this,
+                            move |padding| this.grid.set_padding(padding)
+                        )),
+                        black: this.viewer_black.get(),
+                        on_black: Box::new(glib::clone!(
+                            #[weak]
+                            this,
+                            move |black| this.set_viewer_black(black)
+                        )),
+                        slideshow: this.slideshow.get(),
+                        on_slideshow: Box::new(glib::clone!(
+                            #[weak]
+                            this,
+                            move |options| {
+                                this.slideshow.set(options);
+                                this.viewer.set_slideshow_options(options);
+                            }
+                        )),
+                    },
                 )
             }
         ));
@@ -1078,6 +1086,7 @@ impl Window {
             sort_ascending,
             show: self.show.get(),
             thumb_size: self.size.value().round() as i32,
+            thumb_padding: self.grid.padding(),
             viewer_black: self.viewer_black.get(),
             volume: self.volume.get(),
             viewer_info: self.viewer.info_shown(),

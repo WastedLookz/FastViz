@@ -7,6 +7,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use crate::grid;
 use crate::viewer::SlideshowOptions;
 
 /// Which folder opens at startup.
@@ -18,17 +19,32 @@ pub struct Startup {
     pub open_last: bool,
 }
 
+/// The other settings in the dialog, each applied as soon as it changes.
+pub struct Choices {
+    pub padding: i32,
+    pub on_padding: Box<dyn Fn(i32)>,
+    pub black: bool,
+    pub on_black: Box<dyn Fn(bool)>,
+    pub slideshow: SlideshowOptions,
+    pub on_slideshow: Box<dyn Fn(SlideshowOptions)>,
+}
+
 /// Shows the dialog over `window`; edits apply to `startup` immediately.
 /// `current` is the folder on screen, offered as a one-click start folder.
 pub fn present(
     window: &adw::ApplicationWindow,
     startup: &Rc<RefCell<Startup>>,
     current: Option<PathBuf>,
-    black: bool,
-    on_black: impl Fn(bool) + 'static,
-    slideshow: SlideshowOptions,
-    on_slideshow: impl Fn(SlideshowOptions) + 'static,
+    choices: Choices,
 ) {
+    let Choices {
+        padding,
+        on_padding,
+        black,
+        on_black,
+        slideshow,
+        on_slideshow,
+    } = choices;
     let state = startup.borrow();
     let folder_row = adw::ActionRow::builder()
         .title("Start Folder")
@@ -115,6 +131,21 @@ pub fn present(
     let group = adw::PreferencesGroup::builder().title("Startup").build();
     group.add(&folder_row);
     group.add(&open_last);
+    let padding_row = adw::SpinRow::builder()
+        .title("Padding")
+        .subtitle("Space around each thumbnail, in pixels")
+        .adjustment(&gtk::Adjustment::new(
+            padding.into(),
+            0.0,
+            grid::MAX_PADDING.into(),
+            1.0,
+            4.0,
+            0.0,
+        ))
+        .build();
+    padding_row.connect_value_notify(move |row| on_padding(row.value().round() as i32));
+    let thumbs_group = adw::PreferencesGroup::builder().title("Thumbnails").build();
+    thumbs_group.add(&padding_row);
     let black_row = adw::SwitchRow::builder()
         .title("Black Background")
         .subtitle("Instead of dark gray; B switches it while viewing")
@@ -126,6 +157,7 @@ pub fn present(
 
     let page = adw::PreferencesPage::new();
     page.add(&group);
+    page.add(&thumbs_group);
     page.add(&viewer_group);
     page.add(&slideshow_group(slideshow, on_slideshow));
     let dialog = adw::PreferencesDialog::new();

@@ -30,6 +30,8 @@ pub struct Settings {
     /// Which files the grid shows.
     pub show: Show,
     pub thumb_size: i32,
+    /// Space around each thumbnail tile, in pixels.
+    pub thumb_padding: i32,
     /// Fullscreen background: black instead of the grid's dark gray.
     pub viewer_black: bool,
     /// Video volume in percent.
@@ -60,6 +62,7 @@ impl Default for Settings {
             sort_ascending: true,
             show: Show::All,
             thumb_size: 160,
+            thumb_padding: 6,
             viewer_black: false,
             volume: 100.0,
             viewer_info: false,

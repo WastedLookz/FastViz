@@ -17,8 +17,8 @@ pub const MIN_SIZE: i32 = 48;
 pub const MAX_SIZE: i32 = 512;
 /// Size factor per Ctrl+wheel notch.
 const ZOOM_STEP: f64 = 1.1;
-/// Horizontal padding around each tile; must match `.fv-grid > child` in style.css.
-const TILE_PADDING: i32 = 12;
+/// Space around each tile (its margins), set in Preferences.
+pub const MAX_PADDING: i32 = 40;
 
 /// Called on right-click with the widget clicked and the point in it.
 type ContextHandler = Box<dyn Fn(&gtk::Widget, f64, f64)>;
@@ -28,6 +28,7 @@ pub struct Grid {
     pub scroller: gtk::ScrolledWindow,
     tiles: Rc<RefCell<Vec<glib::WeakRef<Tile>>>>,
     size: Rc<Cell<i32>>,
+    padding: Rc<Cell<i32>>,
     width: Rc<Cell<f64>>,
     thumbnailer: Rc<Thumbnailer>,
     context: Rc<RefCell<Option<ContextHandler>>>,
@@ -35,12 +36,15 @@ pub struct Grid {
 
 impl Grid {
     /// `size` drives the thumbnail edge length; Ctrl+wheel over the grid changes it.
+    /// `padding` is the space around each tile.
     pub fn new(
         model: &impl IsA<gtk::SelectionModel>,
         size: &gtk::Adjustment,
+        padding: i32,
         thumbnailer: &Rc<Thumbnailer>,
     ) -> Self {
         let current = Rc::new(Cell::new(size.value().round() as i32));
+        let padding = Rc::new(Cell::new(padding.clamp(0, MAX_PADDING)));
         let tiles: Rc<RefCell<Vec<glib::WeakRef<Tile>>>> = Rc::default();
         let selection = model.clone().upcast::<gtk::SelectionModel>();
         let context: Rc<RefCell<Option<ContextHandler>>> = Rc::default();
@@ -49,6 +53,8 @@ impl Grid {
         factory.connect_setup(glib::clone!(
             #[strong]
             current,
+            #[strong]
+            padding,
             #[strong]
             tiles,
             #[weak]
@@ -61,7 +67,7 @@ impl Grid {
                 let item = item
                     .downcast_ref::<gtk::ListItem>()
                     .expect("grid list item");
-                let tile = Tile::new(current.get());
+                let tile = Tile::new(current.get(), padding.get());
                 tile.add_controller(drag_source(item, &selection));
                 tile.add_controller(context_click(item, &selection, &context));
                 tiles.borrow_mut().push(tile.downgrade());
@@ -183,13 +189,15 @@ impl Grid {
             width,
             #[strong]
             current,
+            #[strong]
+            padding,
             move |adj| {
                 if width.replace(adj.page_size()) == adj.page_size() {
                     return;
                 }
                 // This fires during allocation; changing columns then would re-enter layout.
-                let (width, size) = (adj.page_size(), current.get());
-                glib::idle_add_local_once(move || fit_columns(&view, width, size));
+                let (width, size, padding) = (adj.page_size(), current.get(), padding.get());
+                glib::idle_add_local_once(move || fit_columns(&view, width, size, padding));
             }
         ));
 
@@ -198,6 +206,7 @@ impl Grid {
             scroller,
             tiles,
             size: current,
+            padding,
             width,
             thumbnailer: thumbnailer.clone(),
             context,
@@ -213,7 +222,7 @@ impl Grid {
         if self.size.replace(size) == size {
             return;
         }
-        fit_columns(&self.view, self.width.get(), size);
+        fit_columns(&self.view, self.width.get(), size, self.padding.get());
         self.thumbnailer.set_size(size);
         self.thumbnailer.queue_sync();
         self.tiles.borrow_mut().retain(|weak| match weak.upgrade() {
@@ -224,10 +233,31 @@ impl Grid {
             None => false,
         });
     }
+
+    pub fn padding(&self) -> i32 {
+        self.padding.get()
+    }
+
+    /// Changes the space around every tile.
+    pub fn set_padding(&self, padding: i32) {
+        let padding = padding.clamp(0, MAX_PADDING);
+        if self.padding.replace(padding) == padding {
+            return;
+        }
+        fit_columns(&self.view, self.width.get(), self.size.get(), padding);
+        self.thumbnailer.queue_sync();
+        self.tiles.borrow_mut().retain(|weak| match weak.upgrade() {
+            Some(tile) => {
+                tile.set_padding(padding);
+                true
+            }
+            None => false,
+        });
+    }
 }
 
-fn fit_columns(view: &gtk::GridView, width: f64, size: i32) {
-    let columns = (width / f64::from(size + TILE_PADDING)).floor().max(1.0) as u32;
+fn fit_columns(view: &gtk::GridView, width: f64, size: i32, padding: i32) {
+    let columns = (width / f64::from(size + 2 * padding)).floor().max(1.0) as u32;
     if view.max_columns() != columns {
         view.set_max_columns(columns);
     }
@@ -365,10 +395,18 @@ glib::wrapper! {
 }
 
 impl Tile {
-    fn new(size: i32) -> Self {
+    fn new(size: i32, padding: i32) -> Self {
         let tile: Self = glib::Object::new();
         tile.set_size(size);
+        tile.set_padding(padding);
         tile
+    }
+
+    fn set_padding(&self, padding: i32) {
+        self.set_margin_top(padding);
+        self.set_margin_bottom(padding);
+        self.set_margin_start(padding);
+        self.set_margin_end(padding);
     }
 
     fn set_size(&self, size: i32) {
@@ -452,8 +490,9 @@ mod thumb_imp {
                     scale = scale.min(1.0 / widget.scale_factor() as f32);
                 }
                 let (w, h) = (tw * scale, th * scale);
-                // Bottom-aligned like Nautilus, so the name sits right under it.
-                let rect = graphene::Rect::new((width - w) / 2.0, height - h, w, h);
+                // Centered in the square: landscape pictures get even space
+                // above and below (portrait ones fill the height anyway).
+                let rect = graphene::Rect::new((width - w) / 2.0, (height - h) / 2.0, w, h);
                 snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(rect, 3.0));
                 // Trilinear uses mipmaps, so any downscale stays smooth.
                 snapshot.append_scaled_texture(texture, gsk::ScalingFilter::Trilinear, &rect);
