@@ -504,9 +504,9 @@ mod thumb_imp {
             }
 
             if let Some(icon) = self.icon.borrow().as_ref() {
-                let size = width.min(height) * 0.7;
-                let area = graphene::Rect::new(0.0, height - size, width, size);
-                draw_icon(&widget, snapshot, icon, size, &area);
+                // The whole square, centered like a thumbnail: themed icons
+                // carry their own margins, so this matches a photo's size.
+                draw_icon(&widget, snapshot, icon, width.min(height), &bounds);
                 return;
             }
 
