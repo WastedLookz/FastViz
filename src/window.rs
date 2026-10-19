@@ -36,6 +36,8 @@ pub struct Window {
     selection: gtk::MultiSelection,
     sorter: gtk::CustomSorter,
     sort: Rc<Cell<(SortKey, bool)>>,
+    /// The shuffle seed while this folder is shuffled.
+    shuffle: Rc<Cell<Option<u64>>>,
     sort_label: gtk::Label,
     sort_icon: gtk::Image,
     crumbs: gtk::Box,
@@ -74,7 +76,8 @@ impl Window {
     pub fn new(app: &adw::Application, settings: Settings, initial: Option<PathBuf>) -> Rc<Self> {
         let sort = Rc::new(Cell::new((settings.sort_key, settings.sort_desc)));
         let store = gio::ListStore::new::<FileItem>();
-        let sorter = model::sorter(sort.clone());
+        let shuffle = Rc::new(Cell::new(None));
+        let sorter = model::sorter(sort.clone(), shuffle.clone());
         let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter.clone()));
         let selection = gtk::MultiSelection::new(Some(sorted));
 
@@ -216,6 +219,7 @@ impl Window {
             selection,
             sorter,
             sort,
+            shuffle,
             sort_label,
             sort_icon,
             crumbs,
@@ -404,6 +408,16 @@ impl Window {
             ),
         );
 
+        let shuffle = toggle_action(
+            "shuffle",
+            false,
+            glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |on| this.set_shuffle(on)
+            ),
+        );
+
         let preferences = gio::SimpleAction::new("preferences", None);
         preferences.connect_activate(glib::clone!(
             #[weak(rename_to = this)]
@@ -461,6 +475,7 @@ impl Window {
             sort_desc,
             show_hidden,
             show_pane,
+            shuffle,
             preferences,
             slideshow,
             go_up,
@@ -542,6 +557,8 @@ impl Window {
         if let Some(task) = self.scan_task.take() {
             task.abort();
         }
+        // A shuffle is for the folder it was asked in.
+        self.end_shuffle();
         self.store.remove_all();
         let rotational = storage::is_rotational(&path);
         trace!("storage: rotational = {rotational:?}");
@@ -638,7 +655,10 @@ impl Window {
     }
 
     fn meta_arrived(self: &Rc<Self>, item: &FileItem) {
-        if self.sort.get().0.needs_meta() && !self.resort_queued.replace(true) {
+        if self.sort.get().0.needs_meta()
+            && self.shuffle.get().is_none()
+            && !self.resort_queued.replace(true)
+        {
             // Re-sort live as metadata streams in, at most a few times a second.
             glib::timeout_add_local_once(
                 std::time::Duration::from_millis(300),
@@ -691,19 +711,51 @@ impl Window {
 
     fn set_sort(&self, key: SortKey, descending: bool) {
         self.sort.set((key, descending));
+        self.end_shuffle();
         if key.needs_meta() {
             let items: Vec<FileItem> = self.store.iter::<FileItem>().flatten().collect();
             self.thumbnailer.want_metadata(&items);
         } else {
             self.thumbnailer.cancel_metadata();
         }
+        self.resort(key.id());
+    }
+
+    /// Puts this folder's items in random order (folders stay first) until a
+    /// sort is picked or another folder opens; each time on, a new order.
+    fn set_shuffle(&self, on: bool) {
+        let seed = on.then(|| u64::from(glib::random_int()) << 32 | u64::from(glib::random_int()));
+        self.shuffle.set(seed);
+        self.resort(if on {
+            "shuffle"
+        } else {
+            self.sort.get().0.id()
+        });
+    }
+
+    /// Back to the chosen sort: a sort was picked or another folder opened.
+    fn end_shuffle(&self) {
+        if self.shuffle.take().is_none() {
+            return;
+        }
+        if let Some(action) = self
+            .window
+            .lookup_action("shuffle")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_state(&false.to_variant());
+        }
+        self.update_sort_button();
+    }
+
+    /// Applies a changed order and shows the selection (or the top) in it.
+    fn resort(&self, order: &str) {
         let started = Instant::now();
         self.sorter.changed(gtk::SorterChange::Different);
         self.thumbnailer.order_changed();
         trace!(
-            "sorted {} items by {} in {:.1} ms",
+            "sorted {} items by {order} in {:.1} ms",
             self.selection.n_items(),
-            key.id(),
             started.elapsed().as_secs_f64() * 1e3
         );
         self.update_sort_button();
@@ -722,6 +774,12 @@ impl Window {
     }
 
     fn update_sort_button(&self) {
+        if self.shuffle.get().is_some() {
+            self.sort_label.set_text("Shuffled");
+            self.sort_icon
+                .set_icon_name(Some("media-playlist-shuffle-symbolic"));
+            return;
+        }
         let (key, descending) = self.sort.get();
         self.sort_label.set_text(key.label());
         self.sort_icon.set_icon_name(Some(if descending {
@@ -893,6 +951,7 @@ fn sort_menu() -> gio::Menu {
 fn main_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     menu.append(Some("Slideshow"), Some("win.slideshow"));
+    menu.append(Some("Shuffle"), Some("win.shuffle"));
     let view = gio::Menu::new();
     view.append(Some("Show Hidden Folders"), Some("win.show-hidden"));
     view.append(Some("Show Folder Pane"), Some("win.show-pane"));

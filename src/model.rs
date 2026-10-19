@@ -85,8 +85,12 @@ pub fn compare(a: &FileItem, b: &FileItem, key: SortKey) -> Ordering {
         .then_with(|| ea.name.cmp(&eb.name))
 }
 
-/// A sorter reading the shared (key, descending) state; call `changed` after updating it.
-pub fn sorter(state: Rc<Cell<(SortKey, bool)>>) -> gtk::CustomSorter {
+/// A sorter reading the shared (key, descending) state and the shuffle seed
+/// (`Some` while shuffled); call `changed` after updating either.
+pub fn sorter(
+    state: Rc<Cell<(SortKey, bool)>>,
+    shuffle: Rc<Cell<Option<u64>>>,
+) -> gtk::CustomSorter {
     gtk::CustomSorter::new(move |a, b| {
         let (key, descending) = state.get();
         let (Some(a), Some(b)) = (a.downcast_ref::<FileItem>(), b.downcast_ref::<FileItem>())
@@ -99,9 +103,26 @@ pub fn sorter(state: Rc<Cell<(SortKey, bool)>>) -> gtk::CustomSorter {
         if folders_first != Ordering::Equal {
             return folders_first.into();
         }
+        if let Some(seed) = shuffle.get() {
+            return shuffled(a.id(), b.id(), seed).into();
+        }
         let ord = compare(a, b, key);
         if descending { ord.reverse() } else { ord }.into()
     })
+}
+
+/// A random but fixed order for `seed`, from each item's id, so items added
+/// while shuffled land in random places too.
+fn shuffled(a: u64, b: u64, seed: u64) -> Ordering {
+    mix(a ^ seed).cmp(&mix(b ^ seed)).then(a.cmp(&b))
+}
+
+/// SplitMix64's finalizer: nearby ids get unrelated ranks.
+fn mix(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
 }
 
 mod imp {
@@ -218,5 +239,23 @@ impl FileItem {
     pub fn pixel_count(&self) -> u64 {
         self.meta()
             .map_or(0, |m| u64::from(m.width) * u64::from(m.height))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shuffle_orders_randomly() {
+        let order = |seed| {
+            let mut ids: Vec<u64> = (1..=200).collect();
+            ids.sort_by(|&a, &b| shuffled(a, b, seed));
+            ids
+        };
+        let (one, two) = (order(1), order(2));
+        assert_ne!(one, (1..=200).collect::<Vec<_>>());
+        assert_ne!(one, two);
+        assert_eq!(one, order(1));
     }
 }
