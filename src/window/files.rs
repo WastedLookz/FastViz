@@ -1,5 +1,5 @@
-//! Cut, copy, paste, rename and delete in the grid, and cut, copy and paste
-//! of folders in the tree: the actions, their shortcuts and context menus,
+//! Cut, copy, paste, rename, delete and new folders in the grid, and the
+//! same for folders in the tree: the actions, their shortcuts and context menus,
 //! the clipboard, and running `fileops` jobs with progress, in-place grid and
 //! tree updates and undo.
 
@@ -32,6 +32,7 @@ enum Job {
     Trash,
     Delete,
     Rename,
+    NewFolder,
     Restore,
 }
 
@@ -44,6 +45,8 @@ struct Pending {
     gap: Option<u32>,
     /// Items the job added, to select when it finishes.
     new_ids: HashSet<u64>,
+    /// The first item added, named in a toast when it isn't in view.
+    first_added: Option<String>,
 }
 
 impl Window {
@@ -62,6 +65,12 @@ impl Window {
         add("paste", |this| this.paste());
         add("open-with", |this| this.open_with());
         add("properties", |this| this.show_selection_properties());
+        add("new-folder", |this| {
+            let folder = this.current.borrow().clone();
+            if let Some(folder) = folder {
+                this.new_folder(folder);
+            }
+        });
         // Folder actions from the tree's menu, with the folder as target.
         let add_for_folder = |name: &str, run: FolderAction| {
             let action = gio::SimpleAction::new(name, Some(&PathBuf::static_variant_type()));
@@ -81,6 +90,7 @@ impl Window {
             this.copy_folder(folder, false)
         });
         add_for_folder("paste-into", |this, folder| this.paste_into(folder));
+        add_for_folder("new-folder-in", |this, folder| this.new_folder(folder));
         add_for_folder("folder-properties", |this, folder| {
             this.show_folder_properties(folder)
         });
@@ -112,16 +122,18 @@ impl Window {
             ("<Shift>KP_Delete", "win.delete"),
             ("<Alt>Return", "win.properties"),
             ("<Alt>KP_Enter", "win.properties"),
+            ("<Shift><Control>n", "win.new-folder"),
         ]);
         self.grid.scroller.add_controller(grid_keys);
         let pane_keys = shortcuts(&[("BackSpace", "win.go-up"), ("<Alt>Up", "win.go-up")]);
         self.paned.add_controller(pane_keys);
         // The tree's keys act on its selected folder, which is the open one.
         let tree_keys = gtk::ShortcutController::new();
-        let tree_bindings: [(&str, FolderAction); 3] = [
+        let tree_bindings: [(&str, FolderAction); 4] = [
             ("<Control>x", |this, folder| this.copy_folder(folder, true)),
             ("<Control>c", |this, folder| this.copy_folder(folder, false)),
             ("<Control>v", |this, folder| this.paste_into(folder)),
+            ("<Shift><Control>n", |this, folder| this.new_folder(folder)),
         ];
         for (trigger, run) in tree_bindings {
             let action = gtk::CallbackAction::new(glib::clone!(
@@ -152,12 +164,17 @@ impl Window {
             #[weak(rename_to = this)]
             self,
             move |widget, x, y, folder| {
-                let menu = gio::Menu::new();
+                let new = gio::Menu::new();
+                new.append_item(&folder_item("New Folder…", "win.new-folder-in", &folder));
+                let edit = gio::Menu::new();
                 if !this.tree.is_root(&folder) {
-                    menu.append_item(&folder_item("Cut", "win.cut-folder", &folder));
-                    menu.append_item(&folder_item("Copy", "win.copy-folder", &folder));
+                    edit.append_item(&folder_item("Cut", "win.cut-folder", &folder));
+                    edit.append_item(&folder_item("Copy", "win.copy-folder", &folder));
                 }
-                menu.append_item(&folder_item("Paste Into Folder", "win.paste-into", &folder));
+                edit.append_item(&folder_item("Paste Into Folder", "win.paste-into", &folder));
+                let menu = gio::Menu::new();
+                menu.append_section(None, &new);
+                menu.append_section(None, &edit);
                 let properties = gio::Menu::new();
                 properties.append_item(&folder_item(
                     "Properties",
@@ -314,9 +331,16 @@ impl Window {
     fn show_context_menu(self: &Rc<Self>, widget: &gtk::Widget, x: f64, y: f64) {
         let menu = match self.selection.selection().size() {
             0 => {
+                let new = gio::Menu::new();
+                new.append_item(&menu_item(
+                    "New Folder…",
+                    "win.new-folder",
+                    "<Shift><Control>n",
+                ));
                 let paste = gio::Menu::new();
                 paste.append_item(&menu_item("Paste", "win.paste", "<Control>v"));
                 let menu = gio::Menu::new();
+                menu.append_section(None, &new);
                 menu.append_section(None, &paste);
                 menu.append_section(None, &properties_section());
                 menu
@@ -547,6 +571,63 @@ impl Window {
         }
     }
 
+    /// Asks for a name and creates the folder in `folder`. Names in the open
+    /// folder are known without touching the drive, so a taken one is
+    /// refused as you type; elsewhere it gets " (2)", as a paste would.
+    fn new_folder(self: &Rc<Self>, folder: PathBuf) {
+        let taken: HashSet<String> = if self.current.borrow().as_ref() == Some(&folder) {
+            self.store
+                .iter::<FileItem>()
+                .flatten()
+                .map(|item| item.entry().name.clone())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        let place = format!("In “{}”", display_name(&folder));
+        let field = gtk::Entry::builder()
+            .text(free_name("New Folder", &taken))
+            .activates_default(true)
+            .build();
+        let dialog = adw::AlertDialog::builder()
+            .heading("New Folder")
+            .body(&place)
+            .extra_child(&field)
+            .default_response("create")
+            .close_response("cancel")
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("create", "Create")]);
+        dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+        field.connect_changed(glib::clone!(
+            #[weak]
+            dialog,
+            move |field| {
+                let name = field.text();
+                let exists = taken.contains(name.as_str());
+                if exists {
+                    dialog.set_body(&format!("“{name}” already exists"));
+                } else {
+                    dialog.set_body(&place);
+                }
+                dialog.set_response_enabled("create", valid_name(&name, "") && !exists);
+            }
+        ));
+        dialog.connect_response(
+            Some("create"),
+            glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                #[weak]
+                field,
+                move |_, _| {
+                    let op = Op::NewFolder(folder.clone(), field.text().into());
+                    this.run(op, Job::NewFolder);
+                }
+            ),
+        );
+        dialog.present(Some(&self.window));
+    }
+
     fn confirm_delete(self: &Rc<Self>, paths: Vec<PathBuf>, no_trash: bool) {
         let heading = match paths.as_slice() {
             [one] => format!(
@@ -595,6 +676,9 @@ impl Window {
             Op::Copy(_, dir) | Op::Move(_, dir) if self.current.borrow().as_ref() != Some(dir) => {
                 format!(" into “{}”", display_name(dir))
             }
+            Op::NewFolder(dir, _) if self.current.borrow().as_ref() != Some(dir) => {
+                format!(" in “{}”", display_name(dir))
+            }
             _ => String::new(),
         };
         let reports = fileops::start(op);
@@ -639,6 +723,9 @@ impl Window {
                         if entry.kind == Kind::Folder {
                             new_folders.push(entry.path.clone());
                         }
+                        pending
+                            .first_added
+                            .get_or_insert_with(|| entry.name.clone());
                         pending.added.push(entry);
                     }
                     Report::Removed(path) => {
@@ -782,6 +869,12 @@ impl Window {
             Job::Delete => format!("Deleted {}", items(succeeded)),
             Job::Restore => format!("Restored {}", items(succeeded)),
             Job::Rename => String::new(),
+            // In view (and selected) when made in the open folder.
+            Job::NewFolder if into.is_empty() => String::new(),
+            Job::NewFolder => format!(
+                "Created “{}”{into}",
+                pending.first_added.as_deref().unwrap_or_default()
+            ),
         };
         if succeeded > 0 && !message.is_empty() {
             let toast = adw::Toast::new(&message);
@@ -885,13 +978,24 @@ fn menu_item(label: &str, action: &str, accel: &str) -> gio::MenuItem {
     item
 }
 
+/// `base`, or "base (2)" and so on if `taken` has it.
+fn free_name(base: &str, taken: &HashSet<String>) -> String {
+    (1..)
+        .map(|n| match n {
+            1 => base.to_owned(),
+            n => format!("{base} ({n})"),
+        })
+        .find(|name| !taken.contains(name))
+        .expect("some numbered name is free")
+}
+
 fn valid_name(name: &str, old: &str) -> bool {
     !name.is_empty() && name != old && name != "." && name != ".." && !name.contains(['/', '\0'])
 }
 
 #[cfg(test)]
 mod tests {
-    use super::valid_name;
+    use super::{free_name, valid_name};
 
     #[test]
     fn rename_validation() {
@@ -900,5 +1004,12 @@ mod tests {
         assert!(!valid_name("", "old.jpg"));
         assert!(!valid_name("a/b.jpg", "old.jpg"));
         assert!(!valid_name("..", "old.jpg"));
+    }
+
+    #[test]
+    fn new_folder_names() {
+        let taken = ["New Folder", "New Folder (2)"].map(String::from).into();
+        assert_eq!(free_name("New Folder", &taken), "New Folder (3)");
+        assert_eq!(free_name("New Folder", &Default::default()), "New Folder");
     }
 }

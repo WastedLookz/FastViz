@@ -22,7 +22,7 @@ a simple, modern GTK 4 look.
 - Videos: MP4, MOV, MKV, WebM, AVI, WMV, FLV, MPEG, TS/M2TS, OGV, 3GP and more
 - Sort by name, date modified, date taken, format, dimensions or size; shuffle
 - Show all files, or only pictures, only videos, or both
-- Cut, copy, paste, rename and move to Trash with undo, working with Files
+- Cut, copy, paste, rename, new folders and move to Trash with undo, working with Files
 - Properties: type, size, dimensions, dates, camera and lens; a folder's contents and total size
 - Slideshows
 
@@ -103,6 +103,7 @@ flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
 | Ctrl+mouse wheel | Thumbnail size |
 | Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, paste (in the folder tree: the selected folder) |
 | F2 | Rename |
+| Shift+Ctrl+N | New folder |
 | Alt+Enter | Properties |
 | Delete, Shift+Delete | Move to Trash, delete permanently |
 | F5 | Slideshow |

@@ -1,5 +1,5 @@
-//! File operations on a worker thread: copy, move, trash, delete, rename and
-//! restoring from the trash. Results stream back as `Report`s.
+//! File operations on a worker thread: copy, move, trash, delete, rename,
+//! new folders and restoring from the trash. Results stream back as `Report`s.
 //!
 //! Nothing is ever overwritten: a name that is taken in the destination gets
 //! " (2)", " (3)", ... before its extension. Drives are never moved, trashed
@@ -23,6 +23,8 @@ pub enum Op {
     Trash(Vec<PathBuf>),
     Delete(Vec<PathBuf>),
     Rename(PathBuf, String),
+    /// A folder called `name` in `dir` (" (2)" and so on if it is taken).
+    NewFolder(PathBuf, String),
     /// Put items trashed from these paths back.
     Restore(Vec<PathBuf>),
 }
@@ -36,6 +38,7 @@ impl Op {
             Self::Trash(_) => "Moving to Trash",
             Self::Delete(_) => "Deleting",
             Self::Rename(..) => "Renaming",
+            Self::NewFolder(..) => "Creating",
             Self::Restore(_) => "Restoring",
         }
     }
@@ -50,7 +53,7 @@ pub enum Report {
     },
     /// Files copied so far within the current item (a folder being copied).
     Files(usize),
-    /// A file or folder now exists (pasted, renamed, restored).
+    /// A file or folder now exists (pasted, renamed, created, restored).
     Added(Entry),
     /// No longer in its folder (moved away, trashed, deleted, renamed).
     Removed(PathBuf),
@@ -207,6 +210,18 @@ fn run(op: Op, tx: &async_channel::Sender<Report>) -> usize {
                     added(&to);
                 }
                 Err(e) => send(failed(&from, e)),
+            }
+        }
+        Op::NewFolder(dir, name) => {
+            // create_dir never replaces anything: if the name was taken
+            // since the check, it fails.
+            let path = unique_path(&dir, OsStr::new(&name));
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    succeeded += 1;
+                    added(&path);
+                }
+                Err(e) => send(failed(&path, e)),
             }
         }
         Op::Restore(paths) => {
@@ -422,6 +437,31 @@ mod tests {
             unique_path(&dir, OsStr::new(".hidden")),
             dir.join(".hidden (2)")
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn new_folders_never_replace() {
+        let dir = std::env::temp_dir().join(format!("fastviz-new-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let create = |name: &str| {
+            let (tx, rx) = async_channel::unbounded();
+            let done = run(Op::NewFolder(dir.clone(), name.to_owned()), &tx);
+            let added: Vec<PathBuf> = std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|report| match report {
+                    Report::Added(entry) => Some(entry.path),
+                    _ => None,
+                })
+                .collect();
+            (done, added)
+        };
+        assert_eq!(create("New Folder"), (1, vec![dir.join("New Folder")]));
+        assert_eq!(create("New Folder"), (1, vec![dir.join("New Folder (2)")]));
+        assert!(dir.join("New Folder (2)").is_dir());
+        fs::write(dir.join("taken"), b"x").unwrap();
+        assert_eq!(create("taken"), (1, vec![dir.join("taken (2)")]));
+        assert_eq!(fs::read(dir.join("taken")).unwrap(), b"x");
+        assert_eq!(create("missing/inner").0, 0);
         fs::remove_dir_all(&dir).unwrap();
     }
 
