@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gdk, glib};
 
 use super::Window;
 use crate::model::FileItem;
@@ -66,10 +66,14 @@ impl Window {
     /// The monitor's size in device pixels, which previews are decoded for.
     fn screen_size(&self) -> (u32, u32) {
         let display = WidgetExt::display(&self.window);
+        // A file opened from outside can reach the viewer before the window
+        // is on screen, with no surface (and no size) yet: then take the
+        // first monitor, not a 1 x 1 "screen" (a blurry 1/8-scale preview).
         let monitor = self
             .window
             .surface()
-            .and_then(|surface| display.monitor_at_surface(&surface));
+            .and_then(|surface| display.monitor_at_surface(&surface))
+            .or_else(|| display.monitors().item(0).and_downcast::<gdk::Monitor>());
         let (width, height, scale) = match monitor {
             Some(monitor) => {
                 let geometry = monitor.geometry();

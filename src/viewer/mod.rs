@@ -80,6 +80,8 @@ pub struct Viewer {
     /// Item whose camera details the panel holds, and whether it is up.
     camera_for: Cell<u64>,
     camera_up: Cell<bool>,
+    /// The pointer is over the viewer (it has moved there since opening).
+    pointer_in: Cell<bool>,
     /// A RAW item that has stayed on screen a moment, so its development is
     /// worth starting (flicking past RAWs shouldn't tie up the decode threads).
     settled: Cell<u64>,
@@ -166,6 +168,7 @@ impl Viewer {
             show_info: Cell::new(show_info),
             camera_for: Cell::new(0),
             camera_up: Cell::new(false),
+            pointer_in: Cell::new(false),
             settled: Cell::new(0),
             settle_timer: RefCell::default(),
             failed: Cell::new(false),
@@ -281,6 +284,10 @@ impl Viewer {
             timer.remove();
         }
         self.widget.set_cursor(None);
+        self.pointer_in.set(false);
+        if self.camera_up.replace(false) {
+            self.camera.set_visible(false);
+        }
         let item = self.current.take();
         self.cache.borrow_mut().clear();
         self.pool.request(Vec::new());
@@ -716,6 +723,15 @@ impl Viewer {
     /// details; moving left of the panel puts them away.
     fn camera_hover(&self, x: f64) {
         let width = f64::from(self.widget.width());
+        // Only a pointer that is really over the viewer (and a viewer that
+        // has its size): just after opening, the width can still be 0 and
+        // the last pointer position stale, which made the panel pop up.
+        if !self.pointer_in.get() || width <= 0.0 {
+            if self.camera_up.replace(false) {
+                self.camera.set_visible(false);
+            }
+            return;
+        }
         let edge = if self.camera_up.get() {
             width - f64::from(self.camera.width()) - 32.0
         } else {
@@ -896,7 +912,16 @@ impl Viewer {
                 if viewer.pointer.replace((x, y)) != (x, y) {
                     viewer.pointer_moved();
                 }
+                viewer.pointer_in.set(true);
                 viewer.camera_hover(x);
+            }
+        ));
+        motion.connect_leave(glib::clone!(
+            #[weak(rename_to = viewer)]
+            self,
+            move |_| {
+                viewer.pointer_in.set(false);
+                viewer.camera_hover(0.0);
             }
         ));
         self.widget.add_controller(motion);

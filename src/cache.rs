@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use gtk::glib;
@@ -64,6 +64,13 @@ pub fn path() -> PathBuf {
 }
 
 pub fn open() -> rusqlite::Result<Connection> {
+    // Several threads open the cache at startup. On a new cache file the
+    // switch to WAL needs the database to itself and fails at once with
+    // "database is locked" (the busy timeout doesn't apply) while another
+    // thread is setting up, which disabled the cache for a first session.
+    // One at a time, it's a no-op for all but the first.
+    static SETUP: Mutex<()> = Mutex::new(());
+    let _setup = SETUP.lock().unwrap_or_else(|e| e.into_inner());
     let path = path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
