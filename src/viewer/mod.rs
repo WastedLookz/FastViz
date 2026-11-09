@@ -95,10 +95,18 @@ pub struct Viewer {
     on_background: RefCell<Option<BackgroundHandler>>,
     slideshow: RefCell<Option<Slideshow>>,
     slideshow_options: Cell<SlideshowOptions>,
+    /// Videos loop (Preferences); a slideshow still plays each once.
+    loop_videos: Cell<bool>,
 }
 
 impl Viewer {
-    pub fn new(black: bool, volume: f64, info: bool, slideshow: SlideshowOptions) -> Rc<Self> {
+    pub fn new(
+        black: bool,
+        volume: f64,
+        info: bool,
+        loop_videos: bool,
+        slideshow: SlideshowOptions,
+    ) -> Rc<Self> {
         let canvas = Canvas::default();
         canvas.set_black(black);
         let playback = Playback::new(volume, black);
@@ -178,7 +186,9 @@ impl Viewer {
             on_background: RefCell::default(),
             slideshow: RefCell::default(),
             slideshow_options: Cell::new(slideshow),
+            loop_videos: Cell::new(loop_videos),
         });
+        viewer.update_loop();
         viewer.connect_input();
         // A video showing its first frame (or failing) frees the drive for
         // preloading its neighbors.
@@ -239,6 +249,18 @@ impl Viewer {
     pub fn set_black(&self, black: bool) {
         self.canvas.set_black(black);
         self.playback.set_black(black);
+    }
+
+    pub fn set_loop_videos(&self, on: bool) {
+        self.loop_videos.set(on);
+        self.update_loop();
+    }
+
+    /// Loops videos when chosen, except in a slideshow (which moves on at
+    /// each video's end).
+    fn update_loop(&self) {
+        let slideshow = self.slideshow.borrow().is_some();
+        self.playback.set_loop(self.loop_videos.get() && !slideshow);
     }
 
     /// Whether the I info overlay is on (remembered between sessions).

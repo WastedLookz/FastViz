@@ -25,6 +25,8 @@ pub struct Choices {
     pub on_padding: Box<dyn Fn(i32)>,
     pub black: bool,
     pub on_black: Box<dyn Fn(bool)>,
+    pub loop_videos: bool,
+    pub on_loop_videos: Box<dyn Fn(bool)>,
     pub slideshow: SlideshowOptions,
     pub on_slideshow: Box<dyn Fn(SlideshowOptions)>,
 }
@@ -42,6 +44,8 @@ pub fn present(
         on_padding,
         black,
         on_black,
+        loop_videos,
+        on_loop_videos,
         slideshow,
         on_slideshow,
     } = choices;
@@ -152,8 +156,15 @@ pub fn present(
         .active(black)
         .build();
     black_row.connect_active_notify(move |row| on_black(row.is_active()));
+    let loop_row = adw::SwitchRow::builder()
+        .title("Loop Videos")
+        .subtitle("Start each video over when it ends; slideshows still move on")
+        .active(loop_videos)
+        .build();
+    loop_row.connect_active_notify(move |row| on_loop_videos(row.is_active()));
     let viewer_group = adw::PreferencesGroup::builder().title("Fullscreen").build();
     viewer_group.add(&black_row);
+    viewer_group.add(&loop_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);

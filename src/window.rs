@@ -81,6 +81,7 @@ pub struct Window {
     viewer: Rc<Viewer>,
     viewer_black: Rc<Cell<bool>>,
     volume: Cell<f64>,
+    loop_videos: Cell<bool>,
     slideshow: Cell<SlideshowOptions>,
     /// A file opened from outside, shown once the folder scan lists it.
     pending_open: RefCell<Option<PathBuf>>,
@@ -243,6 +244,7 @@ impl Window {
             settings.viewer_black,
             settings.volume,
             settings.viewer_info,
+            settings.loop_videos,
             slideshow,
         );
         let pages = gtk::Stack::new();
@@ -308,6 +310,7 @@ impl Window {
             viewer,
             viewer_black: Rc::new(Cell::new(settings.viewer_black)),
             volume: Cell::new(settings.volume),
+            loop_videos: Cell::new(settings.loop_videos),
             slideshow: Cell::new(slideshow),
             pending_open: RefCell::default(),
         });
@@ -550,6 +553,15 @@ impl Window {
                             #[weak]
                             this,
                             move |black| this.set_viewer_black(black)
+                        )),
+                        loop_videos: this.loop_videos.get(),
+                        on_loop_videos: Box::new(glib::clone!(
+                            #[weak]
+                            this,
+                            move |on| {
+                                this.loop_videos.set(on);
+                                this.viewer.set_loop_videos(on);
+                            }
                         )),
                         slideshow: this.slideshow.get(),
                         on_slideshow: Box::new(glib::clone!(
@@ -1202,6 +1214,7 @@ impl Window {
             viewer_black: self.viewer_black.get(),
             volume: self.volume.get(),
             viewer_info: self.viewer.info_shown(),
+            loop_videos: self.loop_videos.get(),
             slideshow_interval: self.slideshow.get().interval,
             slideshow_loop: self.slideshow.get().repeat,
             slideshow_shuffle: self.slideshow.get().shuffle,

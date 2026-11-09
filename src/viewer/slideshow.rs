@@ -71,6 +71,7 @@ impl Viewer {
             timer: None,
             inhibit,
         }));
+        self.update_loop();
         self.playback.set_pause(false);
         self.request();
         self.slideshow_arm();
@@ -88,6 +89,7 @@ impl Viewer {
             app.uninhibit(cookie);
         }
         trace!("slideshow: stop");
+        self.update_loop();
         self.request();
         self.update_overlays();
     }

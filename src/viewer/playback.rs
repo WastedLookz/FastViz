@@ -131,6 +131,10 @@ fn background(black: bool) -> &'static str {
     if black { "#000000" } else { "#1e1e1e" }
 }
 
+fn loop_file(on: bool) -> &'static str {
+    if on { "inf" } else { "no" }
+}
+
 /// The option that sets it: `background` up to mpv 0.37 (client API 2.2),
 /// `background-color` from 0.38 on (the Flatpak's mpv), where `background`
 /// became a mode.
@@ -183,6 +187,7 @@ pub struct Playback {
     failed: Cell<bool>,
     paused: Cell<bool>,
     eof: Cell<bool>,
+    looping: Cell<bool>,
     duration: Cell<f64>,
     volume: Cell<f64>,
     muted: Cell<bool>,
@@ -271,6 +276,7 @@ impl Playback {
             failed: Cell::new(false),
             paused: Cell::new(false),
             eof: Cell::new(false),
+            looping: Cell::new(false),
             duration: Cell::new(0.0),
             volume: Cell::new(volume.clamp(0.0, 100.0)),
             muted: Cell::new(false),
@@ -448,6 +454,17 @@ impl Playback {
         self.update_controls();
     }
 
+    /// Videos start over at their end instead of stopping there.
+    pub fn set_loop(&self, on: bool) {
+        if self.looping.replace(on) != on
+            && let Some(player) = self.player.borrow().as_ref()
+        {
+            // Also applies to the clip playing now; one already at its end
+            // starts over.
+            player.set_string("loop-file", loop_file(on));
+        }
+    }
+
     pub fn set_black(&self, black: bool) {
         self.black.set(black);
         if let Some(player) = self.player.borrow().as_ref() {
@@ -487,8 +504,13 @@ impl Playback {
             // VA-API when it works, else software decoding.
             ("hwdec", "auto-safe"),
             ("gpu-hwdec-interop", "vaapi"),
-            // Stop on the last frame instead of unloading.
+            // Stop on the last frame instead of unloading, without pausing:
+            // a pause there outlives the file, and unpausing before the next
+            // load loses the race (mpv, still at the end, pauses again), so
+            // the next clip would start paused.
             ("keep-open", "yes"),
+            ("keep-open-pause", "no"),
+            ("loop-file", loop_file(self.looping.get())),
             // Never block our render call waiting for a frame's display time.
             ("video-timing-offset", "0"),
             // mpv 0.37's default Lanczos chroma scaling garbles the color

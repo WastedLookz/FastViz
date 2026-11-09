@@ -38,6 +38,8 @@ pub struct Settings {
     pub volume: f64,
     /// The fullscreen info overlay (I) is on.
     pub viewer_info: bool,
+    /// Fullscreen videos start over at their end (not in a slideshow).
+    pub loop_videos: bool,
     /// Seconds per photo in a slideshow.
     pub slideshow_interval: f64,
     pub slideshow_loop: bool,
@@ -66,6 +68,7 @@ impl Default for Settings {
             viewer_black: false,
             volume: 100.0,
             viewer_info: false,
+            loop_videos: false,
             slideshow_interval: 4.0,
             slideshow_loop: true,
             slideshow_shuffle: false,
