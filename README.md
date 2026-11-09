@@ -15,7 +15,7 @@ a simple, modern GTK 4 look.
 - Home folders, every drive and your phone in the folder tree; drives mount when you open them
 - Persistent thumbnail cache; JPEGs use their embedded or scaled-down previews
 - Fullscreen viewer: shrink-to-fit, zoom and pan, next and previous items preloaded
-- Video playback with hardware decoding (VA-API), and video thumbnails
+- Video playback with hardware decoding (VA-API), optional looping, and video thumbnails
 - Photos: JPEG, PNG, WebP, GIF (animated), BMP, TIFF, HEIC/HEIF, AVIF
 - Camera RAW (Canon CR2/CR3, Sony ARW, Nikon NEF, DNG, Fujifilm, Olympus, Panasonic, Pentax and more): thumbnails from the camera's embedded preview; fullscreen shows it at once, then the developed RAW (LibRaw)
 - Fullscreen metadata panel: push the pointer to the right edge for all of the photo's EXIF
@@ -31,11 +31,11 @@ a simple, modern GTK 4 look.
 Both packages are on the
 [Releases](https://github.com/WastedLookz/FastViz/releases) page.
 
-**Flatpak** (most distributions): download `fastviz_0.3.2_x86_64.flatpak` and
+**Flatpak** (most distributions): download `fastviz_0.3.3_x86_64.flatpak` and
 open it in Software, or install it from a terminal:
 
 ```sh
-flatpak install --user ./fastviz_0.3.2_x86_64.flatpak
+flatpak install --user ./fastviz_0.3.3_x86_64.flatpak
 ```
 
 It needs [Flathub](https://flathub.org/setup) set up, for the GNOME runtime it
@@ -44,10 +44,10 @@ install the next release's file the same way.
 
 **Debian package** for **Ubuntu 24.04** and distributions based on it (Zorin
 OS 18, Linux Mint 22, Pop!_OS 24.04), using the system's GTK, mpv and FFmpeg:
-download `fastviz_0.3.2-1_amd64.deb` and open it, or:
+download `fastviz_0.3.3-1_amd64.deb` and open it, or:
 
 ```sh
-sudo apt install ./fastviz_0.3.2-1_amd64.deb
+sudo apt install ./fastviz_0.3.3-1_amd64.deb
 ```
 
 **Arch Linux** and distributions based on it: `packaging/aur/PKGBUILD` builds
