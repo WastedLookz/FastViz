@@ -61,6 +61,7 @@ impl Window {
         add("copy", |this| this.copy_selection(false));
         add("paste", |this| this.paste());
         add("open-with", |this| this.open_with());
+        add("properties", |this| this.show_selection_properties());
         // Folder actions from the tree's menu, with the folder as target.
         let add_for_folder = |name: &str, run: FolderAction| {
             let action = gio::SimpleAction::new(name, Some(&PathBuf::static_variant_type()));
@@ -80,6 +81,9 @@ impl Window {
             this.copy_folder(folder, false)
         });
         add_for_folder("paste-into", |this, folder| this.paste_into(folder));
+        add_for_folder("folder-properties", |this, folder| {
+            this.show_folder_properties(folder)
+        });
         add("rename", |this| this.rename_selected());
         add("trash", |this| {
             let paths = this.selected_paths();
@@ -106,6 +110,8 @@ impl Window {
             ("KP_Delete", "win.trash"),
             ("<Shift>Delete", "win.delete"),
             ("<Shift>KP_Delete", "win.delete"),
+            ("<Alt>Return", "win.properties"),
+            ("<Alt>KP_Enter", "win.properties"),
         ]);
         self.grid.scroller.add_controller(grid_keys);
         let pane_keys = shortcuts(&[("BackSpace", "win.go-up"), ("<Alt>Up", "win.go-up")]);
@@ -152,6 +158,13 @@ impl Window {
                     menu.append_item(&folder_item("Copy", "win.copy-folder", &folder));
                 }
                 menu.append_item(&folder_item("Paste Into Folder", "win.paste-into", &folder));
+                let properties = gio::Menu::new();
+                properties.append_item(&folder_item(
+                    "Properties",
+                    "win.folder-properties",
+                    &folder,
+                ));
+                menu.append_section(None, &properties);
                 this.popup_menu(&menu, widget, x, y);
             }
         ));
@@ -301,8 +314,11 @@ impl Window {
     fn show_context_menu(self: &Rc<Self>, widget: &gtk::Widget, x: f64, y: f64) {
         let menu = match self.selection.selection().size() {
             0 => {
+                let paste = gio::Menu::new();
+                paste.append_item(&menu_item("Paste", "win.paste", "<Control>v"));
                 let menu = gio::Menu::new();
-                menu.append_item(&menu_item("Paste", "win.paste", "<Control>v"));
+                menu.append_section(None, &paste);
+                menu.append_section(None, &properties_section());
                 menu
             }
             1 => {
@@ -828,6 +844,14 @@ fn item_menu(folder: Option<&Path>, single: bool) -> gio::Menu {
     menu.append_section(None, &edit);
     menu.append_section(None, &file);
     menu.append_section(None, &trash);
+    menu.append_section(None, &properties_section());
+    menu
+}
+
+/// Properties of the selection, or of the open folder when nothing is selected.
+fn properties_section() -> gio::Menu {
+    let menu = gio::Menu::new();
+    menu.append_item(&menu_item("Properties", "win.properties", "<Alt>Return"));
     menu
 }
 

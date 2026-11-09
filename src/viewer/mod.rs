@@ -5,7 +5,7 @@
 //! canvas, which shows their first frame until playback starts. The wheel
 //! moves between items; Up/Down zoom.
 
-mod camera;
+pub mod camera;
 mod canvas;
 mod load;
 mod playback;

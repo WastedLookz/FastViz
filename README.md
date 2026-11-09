@@ -23,6 +23,7 @@ a simple, modern GTK 4 look.
 - Sort by name, date modified, date taken, format, dimensions or size; shuffle
 - Show all files, or only pictures, only videos, or both
 - Cut, copy, paste, rename and move to Trash with undo, working with Files
+- Properties: type, size, dimensions, dates, camera and lens; a folder's contents and total size
 - Slideshows
 
 ## Install
@@ -30,11 +31,11 @@ a simple, modern GTK 4 look.
 Both packages are on the
 [Releases](https://github.com/WastedLookz/FastViz/releases) page.
 
-**Flatpak** (most distributions): download `fastviz_0.3.1_x86_64.flatpak` and
+**Flatpak** (most distributions): download `fastviz_0.3.2_x86_64.flatpak` and
 open it in Software, or install it from a terminal:
 
 ```sh
-flatpak install --user ./fastviz_0.3.1_x86_64.flatpak
+flatpak install --user ./fastviz_0.3.2_x86_64.flatpak
 ```
 
 It needs [Flathub](https://flathub.org/setup) set up, for the GNOME runtime it
@@ -43,10 +44,10 @@ install the next release's file the same way.
 
 **Debian package** for **Ubuntu 24.04** and distributions based on it (Zorin
 OS 18, Linux Mint 22, Pop!_OS 24.04), using the system's GTK, mpv and FFmpeg:
-download `fastviz_0.3.1-1_amd64.deb` and open it, or:
+download `fastviz_0.3.2-1_amd64.deb` and open it, or:
 
 ```sh
-sudo apt install ./fastviz_0.3.1-1_amd64.deb
+sudo apt install ./fastviz_0.3.2-1_amd64.deb
 ```
 
 **Arch Linux** and distributions based on it: `packaging/aur/PKGBUILD` builds
@@ -102,6 +103,7 @@ flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
 | Ctrl+mouse wheel | Thumbnail size |
 | Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, paste (in the folder tree: the selected folder) |
 | F2 | Rename |
+| Alt+Enter | Properties |
 | Delete, Shift+Delete | Move to Trash, delete permanently |
 | F5 | Slideshow |
 | F9 | Show or hide the folder tree |

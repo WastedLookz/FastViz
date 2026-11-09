@@ -141,3 +141,15 @@ gridview > child:selected {
 .fv-camera {
   background: none;
 }
+
+/* Properties rows: a small dim caption above the value (like libadwaita
+   1.6's .property rows; this system has 1.5). */
+row.fv-property .title {
+  font-size: 0.85em;
+  opacity: 0.6;
+}
+
+row.fv-property .subtitle {
+  font-size: 1em;
+  opacity: 1;
+}

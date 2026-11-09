@@ -23,6 +23,7 @@ use crate::viewer::{SlideshowOptions, Viewer};
 
 mod files;
 mod fullscreen;
+mod properties;
 
 pub struct Window {
     window: adw::ApplicationWindow,

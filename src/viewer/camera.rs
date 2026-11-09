@@ -73,6 +73,101 @@ pub fn read(path: &Path) -> Vec<(String, String)> {
     rows.into_iter().map(|(_, n, v)| (n, v)).collect()
 }
 
+/// The few shooting details the Properties dialog lists: camera, lens,
+/// exposure, aperture, ISO and focal length (the viewer's panel has the rest).
+pub fn summary(path: &Path) -> Vec<(&'static str, String)> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(exif) = exif::Reader::new().read_from_container(&mut BufReader::new(file)) else {
+        return crate::libraw::details(path).map_or_else(Vec::new, raw_summary);
+    };
+    let text = |tag| {
+        let field = exif.get_field(tag, In::PRIMARY)?;
+        let value = field.display_value().with_unit(&exif).to_string();
+        let value = value.trim_matches('"').trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    };
+    let mut rows = Vec::new();
+    if let Some(camera) = camera_name(text(Tag::Make), text(Tag::Model)) {
+        rows.push(("Camera", camera));
+    }
+    let fields = [
+        ("Lens", text(Tag::LensModel)),
+        ("Exposure", text(Tag::ExposureTime)),
+        ("Aperture", text(Tag::FNumber)),
+        ("ISO", text(Tag::PhotographicSensitivity)),
+        (
+            "Focal length",
+            text(Tag::FocalLength).map(|focal| match text(Tag::FocalLengthIn35mmFilm) {
+                Some(equivalent) => format!("{focal} ({equivalent} in 35 mm terms)"),
+                None => focal,
+            }),
+        ),
+    ];
+    rows.extend(
+        fields
+            .into_iter()
+            .filter_map(|(name, value)| Some((name, value?))),
+    );
+    rows
+}
+
+/// `summary` from the fields LibRaw reads.
+fn raw_summary(d: crate::libraw::Details) -> Vec<(&'static str, String)> {
+    let nonempty = |s: String| (!s.is_empty()).then_some(s);
+    let fields = [
+        ("Camera", camera_name(nonempty(d.make), nonempty(d.model))),
+        ("Lens", nonempty(d.lens)),
+        (
+            "Exposure",
+            (d.shutter > 0.0).then(|| {
+                if d.shutter < 1.0 {
+                    format!("1/{} s", (1.0 / d.shutter).round())
+                } else {
+                    format!("{} s", trim(d.shutter, 1))
+                }
+            }),
+        ),
+        (
+            "Aperture",
+            (d.aperture > 0.0).then(|| format!("f/{}", trim(d.aperture, 1))),
+        ),
+        ("ISO", (d.iso > 0.0).then(|| format!("{}", d.iso.round()))),
+        (
+            "Focal length",
+            (d.focal > 0.0).then(|| {
+                let focal = format!("{} mm", trim(d.focal, 1));
+                if d.focal35 > 0 {
+                    format!("{focal} ({} mm in 35 mm terms)", d.focal35)
+                } else {
+                    focal
+                }
+            }),
+        ),
+    ];
+    fields
+        .into_iter()
+        .filter_map(|(name, value)| Some((name, value?)))
+        .collect()
+}
+
+/// "Canon" + "Canon PowerShot G7 X Mark III" → the model alone; makers
+/// that leave their name out of the model ("SAMSUNG" + "SM-G998B") get both.
+fn camera_name(make: Option<String>, model: Option<String>) -> Option<String> {
+    match (make, model) {
+        (Some(make), Some(model)) => {
+            let brand = make.split_whitespace().next().unwrap_or_default();
+            if model.to_lowercase().starts_with(&brand.to_lowercase()) {
+                Some(model)
+            } else {
+                Some(format!("{make} {model}"))
+            }
+        }
+        (make, model) => model.or(make),
+    }
+}
+
 /// The fields LibRaw reads, in the same order as the EXIF list.
 fn raw_rows(d: crate::libraw::Details) -> Vec<(String, String)> {
     let mut rows = Vec::new();
@@ -160,6 +255,20 @@ mod tests {
         assert_eq!(super::words("WhiteBalance"), "White balance");
         assert_eq!(super::words("FNumber"), "FNumber");
         assert_eq!(super::words("Make"), "Make");
+    }
+
+    #[test]
+    fn names_cameras() {
+        let name = |make: &str, model: &str| {
+            super::camera_name(Some(make.to_owned()), Some(model.to_owned())).unwrap()
+        };
+        assert_eq!(
+            name("Canon", "Canon PowerShot G7 X Mark III"),
+            "Canon PowerShot G7 X Mark III"
+        );
+        assert_eq!(name("NIKON CORPORATION", "NIKON D750"), "NIKON D750");
+        assert_eq!(name("SAMSUNG", "SM-G998B"), "SAMSUNG SM-G998B");
+        assert_eq!(super::camera_name(None, None), None);
     }
 
     #[test]

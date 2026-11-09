@@ -127,6 +127,14 @@ pub fn probe(path: &Path, format: &'static str) -> Option<Meta> {
     Some(meta(&info, format))
 }
 
+/// The clip's length in seconds, from its container.
+pub fn duration(path: &Path) -> Option<f64> {
+    init();
+    let input = ffmpeg::format::input(path).ok()?;
+    let micros = input.duration();
+    (micros > 0).then(|| micros as f64 / f64::from(ffmpeg::ffi::AV_TIME_BASE))
+}
+
 /// A frame from about 10% into the clip (the keyframe before that point),
 /// fitted within `tier` and rotated upright.
 pub fn thumbnail(path: &Path, tier: u32, format: &'static str) -> Result<Thumbnail, String> {
