@@ -60,6 +60,16 @@
   </requires>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-11-09">
+      <description>
+        <ul>
+          <li>Back and forward buttons in the header bar (Alt+Left and Alt+Right)</li>
+          <li>Open With… in the right-click menu, with a dark app chooser</li>
+          <li>Fullscreen: push the pointer to the right edge to see all of the photo's EXIF metadata</li>
+          <li>Dragging a thumbnail to another app shows a small icon, so the drop target stays visible</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-19">
       <description>
         <ul>
