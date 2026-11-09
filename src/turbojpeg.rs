@@ -116,7 +116,7 @@ impl Decoder {
             )
         };
         if status != 0 || width <= 0 || height <= 0 {
-            return Err(error_string(self.0));
+            return Err(self.failed());
         }
         Ok(Header {
             width: width as u32,
@@ -150,9 +150,26 @@ impl Decoder {
         };
         // SAFETY: valid handle.
         if status != 0 && unsafe { tjGetErrorCode(self.0) } != TJERR_WARNING {
-            return Err(error_string(self.0));
+            return Err(self.failed());
         }
         RgbImage::from_raw(width, height, pixels).ok_or_else(|| "bad buffer size".to_owned())
+    }
+
+    /// The last call's error message. The handle is replaced with a fresh
+    /// one: libjpeg-turbo 2.1's header call returns from an error without
+    /// resetting its decoder, which then stays mid-stream and fails every
+    /// later call with the same error (e.g. after a stray JPEG marker in
+    /// RAW sensor data).
+    fn failed(&mut self) -> String {
+        let message = error_string(self.0);
+        // SAFETY: plain constructor; null means failure.
+        let fresh = unsafe { tjInitDecompress() };
+        if !fresh.is_null() {
+            // SAFETY: the old handle came from tjInitDecompress and isn't used again.
+            unsafe { tjDestroy(self.0) };
+            self.0 = fresh;
+        }
+        message
     }
 }
 
@@ -258,6 +275,13 @@ mod tests {
         assert_eq!(small.dimensions(), (400, 300));
         let full = decoder.decode_scaled(&jpeg, 2000).unwrap();
         assert_eq!(full.dimensions(), (800, 600));
+        // An unknown marker (as in RAW sensor data that happens to contain
+        // a JPEG start) must not break the decoder for the next file.
+        let mut bad = jpeg[..2].to_vec();
+        bad.extend_from_slice(&[0xFF, 0x22, 0x00, 0x04, 0x00, 0x00]);
+        assert!(decoder.header(&bad).is_err());
+        assert!(decoder.header(&jpeg).is_ok());
+        assert!(decoder.decode_scaled(&jpeg, 256).is_ok());
     }
 
     #[test]

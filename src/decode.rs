@@ -15,7 +15,7 @@ use crate::media::Meta;
 use crate::turbojpeg;
 
 /// Bump when decoding improves, so files that failed before get retried.
-pub const DECODER_VERSION: u32 = 1;
+pub const DECODER_VERSION: u32 = 2;
 
 /// Bytes read first from each file: enough for a JPEG's EXIF block (at most
 /// 64 KB) including its embedded thumbnail, and for every format's header.
