@@ -120,7 +120,7 @@ impl Window {
         stack.add_child(&empty);
 
         trace!("building window");
-        let tree = FolderTree::new(settings.show_hidden, &settings.expanded);
+        let tree = FolderTree::new(settings.show_hidden, &[]);
         trace!("folder tree ready");
         let count_label = gtk::Label::builder().xalign(0.0).build();
         let selection_label = gtk::Label::builder()
@@ -1204,7 +1204,8 @@ impl Window {
             slideshow_interval: self.slideshow.get().interval,
             slideshow_loop: self.slideshow.get().repeat,
             slideshow_shuffle: self.slideshow.get().shuffle,
-            expanded: self.tree.expanded_rows(),
+            // The tree starts collapsed down to the start folder each time.
+            expanded: Vec::new(),
         }
         .save();
     }

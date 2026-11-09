@@ -6,7 +6,7 @@
 
 use std::io::Cursor;
 
-use exif::{In, Tag};
+use exif::{Context, In, Tag};
 use gtk::glib;
 use image::{DynamicImage, ImageFormat, RgbImage, RgbaImage};
 use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
@@ -108,11 +108,26 @@ pub fn sniff(data: &[u8]) -> Option<&'static str> {
     if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
         return Some("WebP");
     }
+    // Canon CR2 is a TIFF with "CR" and a version after the first IFD offset.
+    if data.len() >= 12 && data.starts_with(b"II*\0") && &data[8..10] == b"CR" {
+        return Some("CR2");
+    }
     if data.starts_with(b"II*\0") || data.starts_with(b"MM\0*") {
         return Some("TIFF");
     }
     if data.starts_with(&[0xFF, 0x0A]) || data.starts_with(b"\0\0\0\x0cJXL \r\n\x87\n") {
         return Some("JPEG XL");
+    }
+    // RAW formats that aren't TIFF-based; LibRaw tells which camera.
+    if data.starts_with(b"FUJIFILMCCD-RAW")
+        || data.starts_with(b"FOVb")
+        || data.starts_with(b"\0MRM")
+        || data.starts_with(b"IIRO")
+        || data.starts_with(b"IIRS")
+        || data.starts_with(b"IIU\0")
+        || (data.len() >= 14 && data.starts_with(b"II\x1a\0\0\0HEAPCCDR"))
+    {
+        return Some("RAW");
     }
     if data.len() >= 16 && &data[4..8] == b"ftyp" {
         let size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
@@ -124,6 +139,7 @@ pub fn sniff(data: &[u8]) -> Option<&'static str> {
         for brand in brands {
             match brand {
                 b"avif" | b"avis" => return Some("AVIF"),
+                b"crx " => return Some("CR3"),
                 b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"mif1" | b"msf1" => {
                     heif = true
                 }
@@ -175,8 +191,25 @@ pub fn embedded_jpeg_thumbnail(prefix: &[u8], tier: u32, codec: &mut Codec) -> O
 
 /// Builds a thumbnail whose longer edge is at most `tier`, plus metadata.
 pub fn thumbnail(data: &[u8], tier: u32, codec: &mut Codec) -> Result<Thumbnail, String> {
+    if let Some(raw) = raw_info(data) {
+        match raw_preview(data, codec) {
+            Some(preview) => {
+                let info = Info {
+                    orientation: raw.orientation,
+                    taken: raw.meta.taken,
+                };
+                let mut thumb = jpeg_thumbnail(preview, &info, tier, codec, raw.meta.format)?;
+                // Report the camera's pixel size, not the preview's.
+                thumb.meta = raw.meta;
+                return Ok(thumb);
+            }
+            None if raw.certain => return Err("no embedded preview in this RAW file".into()),
+            // A TIFF from a camera maker without a preview is an ordinary TIFF.
+            None => {}
+        }
+    }
     match sniff(data) {
-        Some("JPEG") => jpeg_thumbnail(data, tier, codec),
+        Some("JPEG") => jpeg_thumbnail(data, &info_of(data), tier, codec, "JPEG"),
         Some(format @ ("HEIF" | "AVIF")) => heif_thumbnail(data, tier, format, codec),
         Some("JPEG XL") => Err("JPEG XL is not supported yet".to_owned()),
         Some(format) => generic_thumbnail(data, tier, format),
@@ -188,6 +221,13 @@ pub fn thumbnail(data: &[u8], tier: u32, codec: &mut Codec) -> Result<Thumbnail,
 pub fn metadata(data: &[u8]) -> Option<Meta> {
     let format = sniff(data)?;
     let exif = read_exif(data);
+    if let Some(raw) = raw_info(data) {
+        return Some(raw.meta);
+    }
+    if is_libraw_format(format) {
+        // A RAW file whose details need the whole file (not just its start).
+        return None;
+    }
     let size = imagesize::blob_size(data).ok()?;
     let orientation = match format {
         // HEIF rotation lives in the container and imagesize reports raw dimensions.
@@ -203,9 +243,30 @@ pub fn metadata(data: &[u8]) -> Option<Meta> {
     })
 }
 
-fn jpeg_thumbnail(data: &[u8], tier: u32, codec: &mut Codec) -> Result<Thumbnail, String> {
-    let exif = read_exif(data);
-    let orientation = exif.as_ref().map_or(1, orientation);
+/// Orientation and date from a file's EXIF.
+struct Info {
+    orientation: u32,
+    taken: Option<i64>,
+}
+
+fn info_of(bytes: &[u8]) -> Info {
+    let exif = read_exif(bytes);
+    Info {
+        orientation: exif.as_ref().map_or(1, orientation),
+        taken: exif.as_ref().and_then(taken),
+    }
+}
+
+/// `data` is the JPEG to decode; orientation and date come from `info`: the
+/// JPEG's own EXIF, or the RAW file's around a preview.
+fn jpeg_thumbnail(
+    data: &[u8],
+    info: &Info,
+    tier: u32,
+    codec: &mut Codec,
+    format: &'static str,
+) -> Result<Thumbnail, String> {
+    let orientation = info.orientation;
     let decoder = codec.jpeg()?;
     let (image, size) = match decoder.header(data) {
         Ok(header) => {
@@ -229,8 +290,8 @@ fn jpeg_thumbnail(data: &[u8], tier: u32, codec: &mut Codec) -> Result<Thumbnail
         meta: Meta {
             width,
             height,
-            taken: exif.as_ref().and_then(taken),
-            format: "JPEG",
+            taken: info.taken,
+            format,
         },
         native,
     })
@@ -346,8 +407,37 @@ pub fn display(
     screen: Option<(u32, u32)>,
     codec: &mut Codec,
 ) -> Result<Display, String> {
+    if let Some(raw) = raw_info(data) {
+        // A screen-sized request gets the camera's own JPEG, which is
+        // instant; the viewer then asks for the full development.
+        let info = Info {
+            orientation: raw.orientation,
+            taken: raw.meta.taken,
+        };
+        if screen.is_some()
+            && let Some(preview) = raw_preview(data, codec)
+            && let Ok(mut shown) = jpeg_display(preview, &info, screen, codec)
+        {
+            // Lay it out at the RAW's size so the swap doesn't jump.
+            let aspect = |w: u32, h: u32| f64::from(w) / f64::from(h.max(1));
+            if (aspect(raw.meta.width, raw.meta.height) / aspect(shown.width, shown.height) - 1.0)
+                .abs()
+                < 0.03
+            {
+                (shown.width, shown.height) = (raw.meta.width, raw.meta.height);
+            }
+            shown.full = false;
+            return Ok(shown);
+        }
+        match crate::libraw::develop(data) {
+            Ok(image) => return Ok(finish_display(DynamicImage::ImageRgb8(image), screen)),
+            Err(error) if raw.certain => return Err(error),
+            // A TIFF from a camera maker that isn't RAW after all.
+            Err(_) => {}
+        }
+    }
     match sniff(data) {
-        Some("JPEG") => jpeg_display(data, screen, codec),
+        Some("JPEG") => jpeg_display(data, &info_of(data), screen, codec),
         Some("HEIF" | "AVIF") => {
             let context = HeifContext::read_from_bytes(data).map_err(|e| e.to_string())?;
             let handle = context.primary_image_handle().map_err(|e| e.to_string())?;
@@ -365,10 +455,11 @@ pub fn display(
 
 fn jpeg_display(
     data: &[u8],
+    info: &Info,
     screen: Option<(u32, u32)>,
     codec: &mut Codec,
 ) -> Result<Display, String> {
-    let orientation = read_exif(data).as_ref().map_or(1, orientation);
+    let orientation = info.orientation;
     let decoder = codec.jpeg()?;
     let Ok(header) = decoder.header(data) else {
         let image = orient(decode_image(data, ImageFormat::Jpeg)?, orientation);
@@ -388,6 +479,160 @@ fn jpeg_display(
         height,
         full,
     })
+}
+
+/// Formats LibRaw reads that aren't TIFF-with-EXIF: told apart by content.
+fn is_libraw_format(sniffed: &str) -> bool {
+    matches!(sniffed, "CR3" | "RAW")
+}
+
+/// Camera makers whose TIFF files may be RAW (DNG, Pentax PEF, Phase One IIQ, ...).
+const RAW_MAKERS: [&str; 14] = [
+    "PENTAX",
+    "RICOH",
+    "LEICA",
+    "HASSELBLAD",
+    "PHASE ONE",
+    "SIGMA",
+    "OLYMPUS",
+    "OM DIGITAL",
+    "PANASONIC",
+    "SAMSUNG",
+    "KODAK",
+    "EPSON",
+    "MAMIYA",
+    "LEAF",
+];
+
+/// A camera RAW file's details.
+struct RawInfo {
+    /// Size as displayed (camera pixels, orientation applied), date and format.
+    meta: Meta,
+    orientation: u32,
+    /// Surely a RAW file; a TIFF from a camera maker might not be.
+    certain: bool,
+}
+
+/// Recognizes Canon CR2/CR3, Sony ARW, Nikon NEF and the other RAW formats
+/// LibRaw reads, and returns their size, date and orientation. CR2, ARW and
+/// NEF are TIFFs, told apart from real TIFFs by the maker in their EXIF and
+/// read from it directly; the others ask LibRaw, which needs the whole file.
+fn raw_info(data: &[u8]) -> Option<RawInfo> {
+    let sniffed = sniff(data)?;
+    if matches!(sniffed, "CR2" | "TIFF") {
+        let exif = read_exif(data)?;
+        let make = match exif.get_field(Tag::Make, In::PRIMARY).map(|f| &f.value) {
+            Some(exif::Value::Ascii(values)) => values
+                .first()
+                .map(|v| String::from_utf8_lossy(v).to_uppercase())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let label = if sniffed == "CR2" {
+            Some("CR2")
+        } else if make.starts_with("SONY") {
+            Some("ARW")
+        } else if make.contains("NIKON") {
+            Some("NEF")
+        } else {
+            None
+        };
+        if let Some(label) = label {
+            let dimension = |tag| exif.get_field(tag, In::PRIMARY)?.value.get_uint(0);
+            let orientation = orientation(&exif);
+            if let (Some(x), Some(y)) = (
+                dimension(Tag::PixelXDimension),
+                dimension(Tag::PixelYDimension),
+            ) {
+                let (width, height) = oriented(x, y, orientation);
+                return Some(RawInfo {
+                    meta: Meta {
+                        width,
+                        height,
+                        taken: taken(&exif),
+                        format: label,
+                    },
+                    orientation,
+                    certain: sniffed == "CR2",
+                });
+            }
+            // No pixel size in the EXIF: LibRaw knows it (whole file only).
+            let probe = crate::libraw::probe(data)?;
+            let (width, height) = oriented(probe.width, probe.height, orientation);
+            return Some(RawInfo {
+                meta: Meta {
+                    width,
+                    height,
+                    taken: taken(&exif).or(probe.taken),
+                    format: label,
+                },
+                orientation,
+                certain: sniffed == "CR2",
+            });
+        }
+        let dng = exif
+            .fields()
+            .any(|f| f.tag == Tag(Context::Tiff, 0xC612) && f.ifd_num == In::PRIMARY);
+        if !dng && !RAW_MAKERS.iter().any(|m| make.contains(m)) {
+            return None;
+        }
+    } else if !is_libraw_format(sniffed) {
+        return None;
+    }
+    let probe = crate::libraw::probe(data)?;
+    let orientation = match probe.flip {
+        3 => 3,
+        5 => 8,
+        6 => 6,
+        _ => 1,
+    };
+    let (width, height) = oriented(probe.width, probe.height, orientation);
+    let format = match sniffed {
+        "CR3" => "CR3",
+        _ if probe.dng => "DNG",
+        _ => "RAW",
+    };
+    Some(RawInfo {
+        meta: Meta {
+            width,
+            height,
+            taken: probe.taken,
+            format,
+        },
+        orientation,
+        certain: true,
+    })
+}
+
+/// The largest full-color JPEG inside a RAW file (Canon CR2 keeps a
+/// camera-made preview, often full size, next to the sensor data). JPEG
+/// streams are found by their start marker, which can't occur inside another
+/// JPEG's data, and only streams that open with an APPn, DQT or comment segment count (the
+/// sensor data is lossless JPEG and opens with a Huffman table), and
+/// TurboJPEG's header check has the final say.
+fn raw_preview<'a>(data: &'a [u8], codec: &mut Codec) -> Option<&'a [u8]> {
+    let decoder = codec.jpeg().ok()?;
+    let mut best: Option<(u64, &[u8])> = None;
+    let mut tried = 0;
+    let mut from = 0;
+    while let Some(found) = data[from..].windows(4).position(|w| {
+        w[0] == 0xFF && w[1] == 0xD8 && w[2] == 0xFF && matches!(w[3], 0xE0..=0xEF | 0xDB | 0xFE)
+    }) {
+        let start = from + found;
+        from = start + 3;
+        tried += 1;
+        if tried > 24 {
+            break;
+        }
+        let candidate = &data[start..];
+        if let Ok(header) = decoder.header(candidate) {
+            let area = u64::from(header.width) * u64::from(header.height);
+            if !header.cmyk && best.is_none_or(|(a, _)| area > a) {
+                best = Some((area, candidate));
+            }
+        }
+    }
+    best.map(|(_, jpeg)| jpeg)
 }
 
 /// Downscales to the fit size on `screen` (if given and smaller).
@@ -796,5 +1041,112 @@ mod cache_format {
             kib(raw_size),
             raw_ms
         );
+    }
+}
+
+#[cfg(test)]
+mod raw_tests {
+    use super::*;
+
+    /// `FASTVIZ_RAW=/path/to/file.CR2 cargo test --release raw_file -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn raw_file_decodes() {
+        let path = std::env::var("FASTVIZ_RAW").expect("set FASTVIZ_RAW");
+        let data = std::fs::read(path).unwrap();
+        println!(
+            "sniff {:?} label {:?}",
+            sniff(&data),
+            raw_info(&data).map(|r| r.meta.format)
+        );
+        let mut codec = Codec::new();
+        let started = std::time::Instant::now();
+        let thumb = thumbnail(&data, 256, &mut codec).unwrap();
+        println!("thumbnail {:?} in {:?}", thumb.meta, started.elapsed());
+        let shown = display(&data, Some((2560, 1440)), &mut codec).unwrap();
+        println!(
+            "display {}x{} full={}",
+            shown.width, shown.height, shown.full
+        );
+        let started = std::time::Instant::now();
+        let full = display(&data, None, &mut codec).unwrap();
+        println!(
+            "developed {}x{} full={} in {:?}",
+            full.width,
+            full.height,
+            full.full,
+            started.elapsed()
+        );
+        if let (Ok(out), Pixels::Rgb(rgb)) = (std::env::var("FASTVIZ_OUT"), &full.pixels) {
+            rgb.save(out).unwrap();
+        }
+        println!(
+            "metadata from prefix: {:?}",
+            metadata(&data[..PREFIX_LEN.min(data.len())])
+        );
+    }
+}
+
+#[cfg(test)]
+mod vendor_raw_tests {
+    use super::*;
+    use exif::experimental::Writer;
+    use exif::{Field, Value};
+
+    /// A TIFF with `make` in its EXIF and a JPEG after it, like a RAW file
+    /// reduced to the parts we read.
+    fn fake_raw(make: &str, little_endian: bool) -> Vec<u8> {
+        let make = Field {
+            tag: Tag::Make,
+            ifd_num: In::PRIMARY,
+            value: Value::Ascii(vec![make.as_bytes().to_vec()]),
+        };
+        let size = |tag, value| Field {
+            tag,
+            ifd_num: In::PRIMARY,
+            value: Value::Long(vec![value]),
+        };
+        let (x, y) = (
+            size(Tag::PixelXDimension, 96),
+            size(Tag::PixelYDimension, 64),
+        );
+        let mut writer = Writer::new();
+        writer.push_field(&make);
+        writer.push_field(&x);
+        writer.push_field(&y);
+        let mut tiff = std::io::Cursor::new(Vec::new());
+        writer.write(&mut tiff, little_endian).unwrap();
+        let mut data = tiff.into_inner();
+        let image = DynamicImage::ImageRgb8(RgbImage::from_fn(96, 64, |x, y| {
+            image::Rgb([x as u8 * 2, y as u8 * 3, 90])
+        }));
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
+        data.extend_from_slice(&jpeg.into_inner());
+        data
+    }
+
+    #[test]
+    fn sony_and_nikon_use_their_embedded_jpeg() {
+        let mut codec = Codec::new();
+        for (make, little_endian, label) in
+            [("SONY", true, "ARW"), ("NIKON CORPORATION", false, "NEF")]
+        {
+            let data = fake_raw(make, little_endian);
+            assert_eq!(raw_info(&data).map(|r| r.meta.format), Some(label));
+            let thumb = thumbnail(&data, 256, &mut codec).unwrap();
+            assert_eq!(thumb.meta.format, label);
+            // A screen-sized request is answered with the embedded JPEG; full
+            // resolution goes to LibRaw, which rejects this stand-in file.
+            let shown = display(&data, Some((1920, 1080)), &mut codec).unwrap();
+            assert_eq!((shown.width, shown.height, shown.full), (96, 64, false));
+            assert!(display(&data, None, &mut codec).is_err());
+        }
+    }
+
+    #[test]
+    fn other_makers_stay_plain_tiffs() {
+        let data = fake_raw("Canon", true);
+        assert!(raw_info(&data).is_none());
     }
 }

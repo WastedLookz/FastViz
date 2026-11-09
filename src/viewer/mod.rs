@@ -34,6 +34,8 @@ const ZOOM_STEP: f64 = 1.25;
 /// Pointer travel that turns a click into a drag.
 const DRAG_THRESHOLD: f64 = 4.0;
 const CURSOR_HIDE: Duration = Duration::from_millis(1500);
+/// How long a RAW file stays on screen before its development starts.
+const RAW_SETTLE: Duration = Duration::from_millis(300);
 
 /// A decoded image, ready to draw.
 #[derive(Clone)]
@@ -78,6 +80,10 @@ pub struct Viewer {
     /// Item whose camera details the panel holds, and whether it is up.
     camera_for: Cell<u64>,
     camera_up: Cell<bool>,
+    /// A RAW item that has stayed on screen a moment, so its development is
+    /// worth starting (flicking past RAWs shouldn't tie up the decode threads).
+    settled: Cell<u64>,
+    settle_timer: RefCell<Option<glib::SourceId>>,
     /// The current item couldn't be decoded.
     failed: Cell<bool>,
     /// When the current item was asked for, until it is drawn (for the trace).
@@ -160,6 +166,8 @@ impl Viewer {
             show_info: Cell::new(show_info),
             camera_for: Cell::new(0),
             camera_up: Cell::new(false),
+            settled: Cell::new(0),
+            settle_timer: RefCell::default(),
             failed: Cell::new(false),
             switched: Cell::new(None),
             on_exit: RefCell::default(),
@@ -290,6 +298,22 @@ impl Viewer {
         }
         self.position.set(position);
         self.current.replace(Some(item.clone()));
+        if let Some(timer) = self.settle_timer.take() {
+            timer.remove();
+        }
+        self.settled.set(0);
+        if crate::media::is_raw(item.entry().format) {
+            let me = self.me.clone();
+            let id = item.id();
+            let timer = glib::timeout_add_local_once(RAW_SETTLE, move || {
+                if let Some(viewer) = me.upgrade() {
+                    viewer.settle_timer.take();
+                    viewer.settled.set(id);
+                    viewer.request();
+                }
+            });
+            self.settle_timer.replace(Some(timer));
+        }
         self.failed.set(false);
         self.switched.set(Some(Instant::now()));
         let video = item.entry().kind == Kind::Video;
@@ -391,7 +415,11 @@ impl Viewer {
             }
         }
         let current_full = cache.get(&current.id()).is_some_and(|s| s.full);
-        if !current_full && self.canvas.is_zoomed() && self.canvas.needs_more_detail() {
+        // A RAW file's real development follows its embedded preview once
+        // the file has stayed on screen a moment.
+        let raw = self.settled.get() == current.id();
+        let detail = raw || (self.canvas.is_zoomed() && self.canvas.needs_more_detail());
+        if !current_full && detail && cache.contains_key(&current.id()) {
             requests.push(request(&current, None, 0));
         }
         drop(cache);
@@ -470,6 +498,10 @@ impl Viewer {
                 );
             }
             self.display(id, &shown);
+            // A settled RAW file's embedded preview is up: develop the real image.
+            if !shown.full && self.settled.get() == id {
+                self.request();
+            }
         } else {
             self.preupload(&shown.texture);
         }

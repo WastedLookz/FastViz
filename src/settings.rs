@@ -42,7 +42,7 @@ pub struct Settings {
     pub slideshow_interval: f64,
     pub slideshow_loop: bool,
     pub slideshow_shuffle: bool,
-    /// Expanded folder-tree rows as (root, folder) path pairs.
+    /// Unused since 2026-11-09 (the tree starts collapsed); kept so old files load.
     pub expanded: Vec<(String, String)>,
 }
 

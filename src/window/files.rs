@@ -229,10 +229,15 @@ impl Window {
             .valign(gtk::Align::Start)
             .build();
         let toasts = self.toasts.clone();
+        // Weak references: the rows and the button live inside the dialog,
+        // and strong ones would keep it alive after it closes.
         let add_rows = {
-            let list = list.clone();
-            let dialog = dialog.clone();
+            let list = list.downgrade();
+            let dialog = dialog.downgrade();
             move |apps: &[gio::AppInfo]| {
+                let Some(list) = list.upgrade() else {
+                    return;
+                };
                 for app in apps {
                     let row = adw::ActionRow::builder()
                         .title(glib::markup_escape_text(&app.display_name()))
@@ -246,7 +251,9 @@ impl Window {
                     let (app, file, dialog, toasts) =
                         (app.clone(), file.clone(), dialog.clone(), toasts.clone());
                     row.connect_activated(move |_| {
-                        dialog.close();
+                        if let Some(dialog) = dialog.upgrade() {
+                            dialog.close();
+                        }
                         if let Err(error) =
                             app.launch(std::slice::from_ref(&file), None::<&gio::AppLaunchContext>)
                         {

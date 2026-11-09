@@ -26,6 +26,10 @@ kamadak-exif = "0.6.1"
 imagesize = "0.15.0"
 ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 
+[build-dependencies]
+# Compiles the LibRaw wrapper (already in the tree through rusqlite).
+cc = "1.8"
+
 [profile.release]
 lto = "thin"
 

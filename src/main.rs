@@ -4,6 +4,7 @@ mod cache;
 mod decode;
 mod fileops;
 mod grid;
+mod libraw;
 mod loader;
 mod media;
 mod model;

@@ -17,6 +17,8 @@ a simple, modern GTK 4 look.
 - Fullscreen viewer: shrink-to-fit, zoom and pan, next and previous items preloaded
 - Video playback with hardware decoding (VA-API), and video thumbnails
 - Photos: JPEG, PNG, WebP, GIF (animated), BMP, TIFF, HEIC/HEIF, AVIF
+- Camera RAW (Canon CR2/CR3, Sony ARW, Nikon NEF, DNG, Fujifilm, Olympus, Panasonic, Pentax and more): thumbnails from the camera's embedded preview; fullscreen shows it at once, then the developed RAW (LibRaw)
+- Fullscreen metadata panel: push the pointer to the right edge for all of the photo's EXIF
 - Videos: MP4, MOV, MKV, WebM, AVI, WMV, FLV, MPEG, TS/M2TS, OGV, 3GP and more
 - Sort by name, date modified, date taken, format, dimensions or size; shuffle
 - Show all files, or only pictures, only videos, or both

@@ -235,6 +235,7 @@ name = "fastviz"
 version = "0.2.0"
 dependencies = [
  "async-channel",
+ "cc",
  "ffmpeg-next",
  "gtk4",
  "image",

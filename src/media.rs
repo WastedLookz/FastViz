@@ -21,6 +21,11 @@ impl Kind {
     }
 }
 
+/// Whether `format` (a label from `classify`) is a camera RAW format.
+pub fn is_raw(format: &str) -> bool {
+    matches!(format, "CR2" | "ARW" | "NEF" | "CR3" | "DNG" | "RAW")
+}
+
 /// Facts about an image that need its contents, filled in lazily.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Meta {
@@ -35,8 +40,9 @@ pub struct Meta {
 
 /// Every format label we produce, for mapping stored text back to `&'static str`.
 const FORMATS: &[&str] = &[
-    "JPEG", "PNG", "WebP", "GIF", "BMP", "TIFF", "HEIF", "AVIF", "JPEG XL", "MP4", "M4V", "MOV",
-    "3GP", "3G2", "MKV", "WebM", "AVI", "WMV", "FLV", "MPEG", "MPEG-TS", "Ogg", "MXF", "DV",
+    "JPEG", "PNG", "WebP", "GIF", "BMP", "TIFF", "CR2", "ARW", "NEF", "CR3", "DNG", "RAW", "HEIF",
+    "AVIF", "JPEG XL", "MP4", "M4V", "MOV", "3GP", "3G2", "MKV", "WebM", "AVI", "WMV", "FLV",
+    "MPEG", "MPEG-TS", "Ogg", "MXF", "DV",
 ];
 
 pub fn format_label(name: &str) -> &'static str {
@@ -90,6 +96,15 @@ pub fn classify(name: &str) -> Option<(Kind, &'static str)> {
         "heic" | "heif" | "hif" => (Image, "HEIF"),
         "avif" => (Image, "AVIF"),
         "jxl" => (Image, "JPEG XL"),
+        "cr2" => (Image, "CR2"),
+        "arw" | "srf" | "sr2" => (Image, "ARW"),
+        "nef" | "nrw" => (Image, "NEF"),
+        "cr3" => (Image, "CR3"),
+        "dng" => (Image, "DNG"),
+        // Fujifilm, Olympus, Panasonic, Pentax, Hasselblad, Phase One, Sigma,
+        // Leica, and older Canon, Minolta, Kodak, Epson, Samsung.
+        "raf" | "orf" | "rw2" | "pef" | "3fr" | "fff" | "iiq" | "x3f" | "rwl" | "crw" | "mrw"
+        | "kdc" | "dcr" | "erf" | "srw" => (Image, "RAW"),
         "mp4" => (Video, "MP4"),
         "m4v" => (Video, "M4V"),
         "mov" | "qt" => (Video, "MOV"),
