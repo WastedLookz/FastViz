@@ -1,6 +1,6 @@
 # Maintainer: WastedLookz <231484447+WastedLookz@users.noreply.github.com>
 pkgname=fastviz
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc='Fast, minimal photo and video browser for GNOME/Wayland'
 arch=('x86_64')
@@ -32,7 +32,7 @@ optdepends=(
 # GCC's link-time optimization.
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('3df4134eec1f62cf66836a8016aa0df0a216b9de88ee44f5a64b2b3c5ff9cada')
+sha256sums=('e104e8412a180f1f1d063d3cac415198234ce842f410d42225da838320241c3f')
 
 prepare() {
   cd "FastViz-$pkgver"
