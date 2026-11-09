@@ -6,6 +6,8 @@
 # uncommitted changes), so this works before the release tag exists. Run from anywhere:
 #   tools/test-aur.sh            build (and run the tests) once
 #   tools/test-aur.sh --update   also update the Arch tree first
+#   tools/test-aur.sh --release  build from the GitHub tag's tarball instead,
+#                                checking the PKGBUILD's checksum (after tagging)
 # Afterwards target/arch/build has the packages and makepkg.log.
 # packaging/aur/LICENSE (0BSD) covers the package files themselves, as the
 # AUR guidelines ask; FastViz is GPL-3.0-or-later.
@@ -49,6 +51,10 @@ else
     update=${1:-}
 fi
 
+if [ "$update" = --release ]; then
+    release=yes
+    update=
+fi
 if [ -n "$update" ]; then
     # base-devel and the PKGBUILD's depends/makedepends.
     deps=$(sed -n '/^depends=(/,/)/p; /^makedepends=/p' packaging/aur/PKGBUILD |
@@ -59,10 +65,18 @@ fi
 version=$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)
 rm -rf "$build/src" "$build/pkg" "$build"/*.pkg.tar.zst
 cp packaging/aur/PKGBUILD "$build/"
-# HEAD plus uncommitted changes to tracked files.
-tree=$(git stash create)
-git archive --format=tar.gz --prefix="FastViz-$version/" -o "$build/fastviz-$version.tar.gz" "${tree:-HEAD}"
-as_user makepkg --nodeps --noconfirm >"$build/makepkg.log" 2>&1 ||
+rm -f "$build"/fastviz-*.tar.gz
+if [ -n "${release:-}" ]; then
+    # makepkg downloads the tag's tarball and checks it against sha256sums.
+    skip=
+else
+    # HEAD plus uncommitted changes to tracked files. The tarball is ours,
+    # not GitHub's, so its checksum differs from the PKGBUILD's.
+    tree=$(git stash create)
+    git archive --format=tar.gz --prefix="FastViz-$version/" -o "$build/fastviz-$version.tar.gz" "${tree:-HEAD}"
+    skip=--skipchecksums
+fi
+as_user makepkg --nodeps --noconfirm $skip >"$build/makepkg.log" 2>&1 ||
     { tail -30 "$build/makepkg.log"; exit 1; }
 grep 'test result' "$build/makepkg.log" || true
 as_user makepkg --printsrcinfo >packaging/aur/.SRCINFO
