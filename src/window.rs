@@ -27,6 +27,13 @@ mod fullscreen;
 pub struct Window {
     window: adw::ApplicationWindow,
     paned: gtk::Paned,
+    /// Back/forward buttons above the folder tree.
+    pane: gtk::Box,
+    /// Back/forward buttons at the left of the header bar.
+    nav: gtk::Box,
+    /// Folders visited, and where we are in them (back/forward).
+    history: RefCell<(Vec<PathBuf>, usize)>,
+    walking: Cell<bool>,
     tree: Rc<FolderTree>,
     grid: Grid,
     thumbnailer: Rc<Thumbnailer>,
@@ -180,7 +187,22 @@ impl Window {
         // Show floats over the grid's left edge: the spacer before it is as
         // wide as the folder pane (`align_show_button`).
         let show_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        // Back and forward sit in the header bar.
+        let back_button = gtk::Button::builder()
+            .icon_name("go-previous-symbolic")
+            .action_name("win.back")
+            .tooltip_text("Back (Alt+Left)")
+            .build();
+        let forward_button = gtk::Button::builder()
+            .icon_name("go-next-symbolic")
+            .action_name("win.forward")
+            .tooltip_text("Forward (Alt+Right)")
+            .build();
+        let nav = gtk::Box::builder().build();
+        nav.append(&back_button);
+        nav.append(&forward_button);
         let show_start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        show_start.append(&nav);
         show_start.append(&show_spacer);
         show_start.append(&show_button);
         let header = adw::HeaderBar::builder()
@@ -190,10 +212,13 @@ impl Window {
         header.pack_end(&menu_button);
         header.pack_end(&sort_button);
 
-        tree.widget.set_visible(settings.pane_visible);
+        let pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        tree.widget.set_vexpand(true);
+        pane.append(&tree.widget);
+        pane.set_visible(settings.pane_visible);
         let paned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .start_child(&tree.widget)
+            .start_child(&pane)
             .end_child(&stack)
             .resize_start_child(false)
             .shrink_start_child(false)
@@ -238,6 +263,10 @@ impl Window {
         let this = Rc::new(Self {
             window,
             paned,
+            pane,
+            nav,
+            history: RefCell::default(),
+            walking: Cell::new(false),
             tree,
             grid,
             thumbnailer,
@@ -480,7 +509,7 @@ impl Window {
                     if !show {
                         this.pane_width.set(this.paned.position());
                     }
-                    this.tree.widget.set_visible(show);
+                    this.pane.set_visible(show);
                     if show {
                         this.paned.set_position(this.pane_width.get());
                     }
@@ -541,6 +570,17 @@ impl Window {
             self,
             move |_, _| this.start_slideshow()
         ));
+
+        for (name, step) in [("back", -1isize), ("forward", 1)] {
+            let action = gio::SimpleAction::new(name, None);
+            action.connect_activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_, _| this.walk(step)
+            ));
+            action.set_enabled(false);
+            self.window.add_action(&action);
+        }
 
         let go_up = gio::SimpleAction::new("go-up", None);
         go_up.connect_activate(glib::clone!(
@@ -666,6 +706,18 @@ impl Window {
         if self.current.borrow().as_ref() == Some(&path) {
             return;
         }
+        if !self.walking.get()
+            && self.history.borrow().0.get(self.history.borrow().1) != Some(&path)
+        {
+            let mut history = self.history.borrow_mut();
+            let (list, at) = &mut *history;
+            if !list.is_empty() {
+                list.truncate(*at + 1);
+            }
+            list.push(path.clone());
+            *at = list.len() - 1;
+        }
+        self.update_nav_actions();
         if let Some(task) = self.scan_task.take() {
             task.abort();
         }
@@ -730,6 +782,40 @@ impl Window {
             }
         });
         self.scan_task.replace(Some(task));
+    }
+
+    /// Back (-1) or forward (+1) through the folders visited.
+    fn walk(self: &Rc<Self>, step: isize) {
+        let target = {
+            let mut history = self.history.borrow_mut();
+            let (list, at) = &mut *history;
+            let Some(next) = at.checked_add_signed(step).filter(|n| *n < list.len()) else {
+                return;
+            };
+            *at = next;
+            list[next].clone()
+        };
+        self.walking.set(true);
+        self.navigate(target, true);
+        self.walking.set(false);
+    }
+
+    fn update_nav_actions(&self) {
+        let (len, at) = {
+            let history = self.history.borrow();
+            (history.0.len(), history.1)
+        };
+        let enable = |name: &str, on: bool| {
+            if let Some(action) = self
+                .window
+                .lookup_action(name)
+                .and_downcast::<gio::SimpleAction>()
+            {
+                action.set_enabled(on);
+            }
+        };
+        enable("back", at > 0);
+        enable("forward", at + 1 < len);
     }
 
     /// Rescans the current folder (e.g. after toggling hidden files).
@@ -874,7 +960,7 @@ impl Window {
     /// grid start at the same x, so the spacer is as wide as the pane plus
     /// the handle after it.
     fn align_show_button(&self) {
-        let width = if self.tree.widget.get_visible() {
+        let width = if self.pane.get_visible() {
             let handle = std::iter::successors(self.paned.first_child(), |w| w.next_sibling())
                 .find(|w| w.css_name() == "separator")
                 .map_or(0, |w| w.measure(gtk::Orientation::Horizontal, -1).0);
@@ -882,7 +968,9 @@ impl Window {
         } else {
             0
         };
-        self.show_spacer.set_width_request(width);
+        // Show starts at the grid's edge, after the back/forward buttons.
+        let nav = self.nav.measure(gtk::Orientation::Horizontal, -1).1;
+        self.show_spacer.set_width_request((width - nav).max(0));
     }
 
     fn update_show_button(&self) {
@@ -1080,7 +1168,7 @@ impl Window {
     fn save_settings(&self) {
         let (sort_key, sort_ascending) = self.sort.get();
         let (window_width, window_height) = self.window.default_size();
-        let pane_visible = self.tree.widget.get_visible();
+        let pane_visible = self.pane.get_visible();
         let startup = self.startup_folder.borrow();
         Settings {
             last_folder: self

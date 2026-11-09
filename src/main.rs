@@ -43,6 +43,8 @@ fn main() -> glib::ExitCode {
         app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
         app.set_accels_for_action("win.preferences", &["<Control>comma"]);
         app.set_accels_for_action("win.slideshow", &["F5"]);
+        app.set_accels_for_action("win.back", &["<Alt>Left"]);
+        app.set_accels_for_action("win.forward", &["<Alt>Right"]);
     });
     // One window; a second launch (or opening files) reuses it.
     let window: Rc<RefCell<Option<Rc<window::Window>>>> = Rc::default();

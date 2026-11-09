@@ -349,17 +349,58 @@ fn drag_source(list_item: &gtk::ListItem, selection: &gtk::SelectionModel) -> gt
             } else {
                 vec![gio::File::for_path(&item.entry().path)]
             };
+            // A small icon, so the drop target under the pointer (a taskbar
+            // icon, say) stays visible.
             if let Some(texture) = item.texture() {
-                source.set_icon(Some(&texture), texture.width() / 2, texture.height() / 2);
+                let icon = drag_icon(&texture);
+                source.set_icon(
+                    Some(&icon),
+                    icon.intrinsic_width() / 2,
+                    icon.intrinsic_height() / 2,
+                );
             } else if let Some(tile) = list_item.child() {
                 let paintable = gtk::WidgetPaintable::new(Some(&tile));
-                source.set_icon(Some(&paintable), tile.width() / 2, tile.height() / 2);
+                let icon = shrink_paintable(&paintable, tile.width(), tile.height());
+                source.set_icon(
+                    Some(&icon),
+                    icon.intrinsic_width() / 2,
+                    icon.intrinsic_height() / 2,
+                );
             }
             let files = gdk::FileList::from_array(&paths);
             Some(gdk::ContentProvider::for_value(&files.to_value()))
         }
     ));
     source
+}
+
+/// Longest side of the drag icon, in logical pixels.
+const DRAG_ICON: f32 = 40.0;
+
+fn drag_icon(texture: &gdk::Texture) -> gdk::Paintable {
+    shrink_paintable(texture, texture.width(), texture.height())
+}
+
+/// `paintable` scaled down so its longest side is `DRAG_ICON`.
+fn shrink_paintable(
+    paintable: &impl IsA<gdk::Paintable>,
+    width: i32,
+    height: i32,
+) -> gdk::Paintable {
+    let longest = width.max(height).max(1) as f32;
+    let scale = (DRAG_ICON / longest).min(1.0);
+    let (w, h) = (
+        width as f64 * f64::from(scale),
+        height as f64 * f64::from(scale),
+    );
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(&snapshot, w.max(1.0), h.max(1.0));
+    snapshot
+        .to_paintable(Some(&graphene::Size::new(
+            w.max(1.0) as f32,
+            h.max(1.0) as f32,
+        )))
+        .unwrap_or_else(|| gdk::Paintable::new_empty(1, 1))
 }
 
 /// Right-click on a tile: select it (unless it is part of the selection),

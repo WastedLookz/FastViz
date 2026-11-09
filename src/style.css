@@ -136,3 +136,8 @@ gridview > child:selected {
   font-feature-settings: "tnum";
   margin: 0 6px;
 }
+
+/* The metadata panel scrolls; its list carries the .fv-info look. */
+.fv-camera {
+  background: none;
+}

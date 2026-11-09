@@ -60,6 +60,7 @@ impl Window {
         add("cut", |this| this.copy_selection(true));
         add("copy", |this| this.copy_selection(false));
         add("paste", |this| this.paste());
+        add("open-with", |this| this.open_with());
         // Folder actions from the tree's menu, with the folder as target.
         let add_for_folder = |name: &str, run: FolderAction| {
             let action = gio::SimpleAction::new(name, Some(&PathBuf::static_variant_type()));
@@ -196,6 +197,100 @@ impl Window {
             .collect()
     }
 
+    /// Right-click → Open With…: our own app chooser (a system one follows
+    /// the system theme, not FastViz's dark look) for the one selected item.
+    fn open_with(self: &Rc<Self>) {
+        let Some(path) = self.selected_paths().into_iter().next() else {
+            return;
+        };
+        let file = gio::File::for_path(&path);
+        let content_type = if path.is_dir() {
+            "inode/directory".to_owned()
+        } else {
+            gio::content_type_guess(Some(&path), None).0.to_string()
+        };
+        let recommended: Vec<gio::AppInfo> = gio::AppInfo::all_for_type(&content_type)
+            .into_iter()
+            .filter(|app| app.should_show())
+            .collect();
+
+        let dialog = adw::Dialog::builder()
+            .title("Open With")
+            .content_width(380)
+            .content_height(480)
+            .build();
+        let list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_start(12)
+            .margin_end(12)
+            .valign(gtk::Align::Start)
+            .build();
+        let toasts = self.toasts.clone();
+        let add_rows = {
+            let list = list.clone();
+            let dialog = dialog.clone();
+            move |apps: &[gio::AppInfo]| {
+                for app in apps {
+                    let row = adw::ActionRow::builder()
+                        .title(glib::markup_escape_text(&app.display_name()))
+                        .activatable(true)
+                        .build();
+                    if let Some(icon) = app.icon() {
+                        let image = gtk::Image::from_gicon(&icon);
+                        image.set_pixel_size(32);
+                        row.add_prefix(&image);
+                    }
+                    let (app, file, dialog, toasts) =
+                        (app.clone(), file.clone(), dialog.clone(), toasts.clone());
+                    row.connect_activated(move |_| {
+                        dialog.close();
+                        if let Err(error) =
+                            app.launch(std::slice::from_ref(&file), None::<&gio::AppLaunchContext>)
+                        {
+                            toasts.add_toast(adw::Toast::new(&format!("Couldn't open: {error}")));
+                        }
+                    });
+                    list.append(&row);
+                }
+            }
+        };
+        add_rows(&recommended);
+
+        // "Show all apps" adds the rest of the installed ones.
+        let more = gtk::Button::builder()
+            .label("Show All Apps")
+            .halign(gtk::Align::Center)
+            .margin_bottom(12)
+            .css_classes(["pill"])
+            .visible(true)
+            .build();
+        more.connect_clicked(move |button| {
+            let rest: Vec<gio::AppInfo> = gio::AppInfo::all()
+                .into_iter()
+                .filter(|app| app.should_show())
+                .filter(|app| !recommended.iter().any(|r| r.id() == app.id()))
+                .collect();
+            add_rows(&rest);
+            button.set_visible(false);
+        });
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.append(&list);
+        page.append(&more);
+        let scroller = gtk::ScrolledWindow::builder()
+            .child(&page)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .build();
+        let view = adw::ToolbarView::new();
+        view.add_top_bar(&adw::HeaderBar::new());
+        view.set_content(Some(&scroller));
+        dialog.set_child(Some(&view));
+        dialog.present(Some(&self.window));
+    }
+
     fn show_context_menu(self: &Rc<Self>, widget: &gtk::Widget, x: f64, y: f64) {
         let menu = match self.selection.selection().size() {
             0 => {
@@ -208,9 +303,9 @@ impl Window {
                     .next()
                     .filter(|item| item.entry().kind == Kind::Folder)
                     .map(|item| item.entry().path.clone());
-                item_menu(folder.as_deref())
+                item_menu(folder.as_deref(), true)
             }
-            _ => item_menu(None),
+            _ => item_menu(None, false),
         };
         self.popup_menu(&menu, widget, x, y);
     }
@@ -704,7 +799,7 @@ fn shortcuts(bindings: &[(&str, &str)]) -> gtk::ShortcutController {
 }
 
 /// The menu for selected tiles; `folder` when it is a single folder.
-fn item_menu(folder: Option<&Path>) -> gio::Menu {
+fn item_menu(folder: Option<&Path>, single: bool) -> gio::Menu {
     let edit = gio::Menu::new();
     edit.append_item(&menu_item("Cut", "win.cut", "<Control>x"));
     edit.append_item(&menu_item("Copy", "win.copy", "<Control>c"));
@@ -713,6 +808,12 @@ fn item_menu(folder: Option<&Path>) -> gio::Menu {
         edit.append_item(&folder_item("Paste Into Folder", "win.paste-into", folder));
     }
     let file = gio::Menu::new();
+    if single {
+        file.append_item(&gio::MenuItem::new(
+            Some("Open With…"),
+            Some("win.open-with"),
+        ));
+    }
     file.append_item(&menu_item("Rename…", "win.rename", "F2"));
     let trash = gio::Menu::new();
     trash.append_item(&menu_item("Move to Trash", "win.trash", "Delete"));

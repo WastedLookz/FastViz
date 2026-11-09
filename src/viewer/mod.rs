@@ -5,6 +5,7 @@
 //! canvas, which shows their first frame until playback starts. The wheel
 //! moves between items; Up/Down zoom.
 
+mod camera;
 mod canvas;
 mod load;
 mod playback;
@@ -53,6 +54,9 @@ pub struct Viewer {
     pub widget: gtk::Overlay,
     canvas: Canvas,
     info: gtk::Label,
+    /// Camera details, shown while the pointer is at the right edge.
+    camera: gtk::ScrolledWindow,
+    camera_grid: gtk::Grid,
     note: gtk::Label,
     playback: Rc<Playback>,
     pool: Pool,
@@ -71,6 +75,9 @@ pub struct Viewer {
     /// Wheel travel not yet turned into a move (touchpads scroll in pixels).
     wheel_travel: Cell<f64>,
     show_info: Cell<bool>,
+    /// Item whose camera details the panel holds, and whether it is up.
+    camera_for: Cell<u64>,
+    camera_up: Cell<bool>,
     /// The current item couldn't be decoded.
     failed: Cell<bool>,
     /// When the current item was asked for, until it is drawn (for the trace).
@@ -97,6 +104,22 @@ impl Viewer {
             .css_classes(["fv-info"])
             .visible(false)
             .build();
+        let camera_grid = gtk::Grid::builder()
+            .column_spacing(14)
+            .row_spacing(2)
+            .css_classes(["fv-info"])
+            .build();
+        let camera = gtk::ScrolledWindow::builder()
+            .child(&camera_grid)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
+            .margin_end(16)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(true)
+            .propagate_natural_height(true)
+            .css_classes(["fv-camera"])
+            .visible(false)
+            .build();
         let note = gtk::Label::builder()
             .halign(gtk::Align::Center)
             .valign(gtk::Align::End)
@@ -110,6 +133,7 @@ impl Viewer {
             .build();
         widget.add_overlay(&playback.area);
         widget.add_overlay(&info);
+        widget.add_overlay(&camera);
         widget.add_overlay(&note);
         widget.add_overlay(&playback.controls);
 
@@ -118,6 +142,8 @@ impl Viewer {
             widget,
             canvas,
             info,
+            camera,
+            camera_grid,
             note,
             playback,
             pool: Pool::new(2),
@@ -132,6 +158,8 @@ impl Viewer {
             pointer: Cell::new((0.0, 0.0)),
             wheel_travel: Cell::new(0.0),
             show_info: Cell::new(show_info),
+            camera_for: Cell::new(0),
+            camera_up: Cell::new(false),
             failed: Cell::new(false),
             switched: Cell::new(None),
             on_exit: RefCell::default(),
@@ -257,6 +285,9 @@ impl Viewer {
 
     fn show(&self, item: FileItem, position: u32) {
         self.stop_animation();
+        if self.camera_up.replace(false) {
+            self.camera.set_visible(false);
+        }
         self.position.set(position);
         self.current.replace(Some(item.clone()));
         self.failed.set(false);
@@ -291,6 +322,7 @@ impl Viewer {
             self.playback.show_controls(false);
         }
         self.slideshow_arm();
+        self.camera_hover(self.pointer.get().0);
     }
 
     fn display(&self, id: u64, shown: &Shown) {
@@ -648,6 +680,75 @@ impl Viewer {
         self.cursor_timer.replace(Some(timer));
     }
 
+    /// Pushing the pointer against the right edge brings up the camera
+    /// details; moving left of the panel puts them away.
+    fn camera_hover(&self, x: f64) {
+        let width = f64::from(self.widget.width());
+        let edge = if self.camera_up.get() {
+            width - f64::from(self.camera.width()) - 32.0
+        } else {
+            width - 6.0
+        };
+        let want = x >= edge && !self.video_current() && self.current.borrow().is_some();
+        if want == self.camera_up.get() {
+            return;
+        }
+        self.camera_up.set(want);
+        if !want {
+            self.camera.set_visible(false);
+            return;
+        }
+        let Some(item) = self.current.borrow().clone() else {
+            return;
+        };
+        if self.camera_for.get() == item.id() {
+            self.camera.set_visible(true);
+            return;
+        }
+        let path = item.entry().path.clone();
+        let me = self.me.clone();
+        glib::spawn_future_local(async move {
+            let rows = gtk::gio::spawn_blocking(move || camera::read(&path))
+                .await
+                .unwrap_or_default();
+            let Some(viewer) = me.upgrade() else {
+                return;
+            };
+            // The item may have changed meanwhile.
+            if viewer.current.borrow().as_ref().map(FileItem::id) != Some(item.id()) {
+                return;
+            }
+            while let Some(child) = viewer.camera_grid.first_child() {
+                viewer.camera_grid.remove(&child);
+            }
+            let cell = |text: &str, column: i32, row: i32, dim: bool| {
+                let label = gtk::Label::builder()
+                    .label(text)
+                    .xalign(0.0)
+                    .yalign(0.0)
+                    .wrap(true)
+                    .wrap_mode(gtk::pango::WrapMode::WordChar)
+                    .max_width_chars(if dim { 22 } else { 40 })
+                    .build();
+                if dim {
+                    label.set_opacity(0.6);
+                }
+                viewer.camera_grid.attach(&label, column, row, 1, 1);
+            };
+            if rows.is_empty() {
+                cell("No metadata in this file", 0, 0, false);
+            }
+            for (row, (name, value)) in rows.iter().enumerate() {
+                cell(name, 0, row as i32, true);
+                cell(value, 1, row as i32, false);
+            }
+            let room = (viewer.widget.height() - 64).max(120);
+            viewer.camera.set_max_content_height(room);
+            viewer.camera_for.set(item.id());
+            viewer.camera.set_visible(viewer.camera_up.get());
+        });
+    }
+
     fn video_current(&self) -> bool {
         self.current
             .borrow()
@@ -763,6 +864,7 @@ impl Viewer {
                 if viewer.pointer.replace((x, y)) != (x, y) {
                     viewer.pointer_moved();
                 }
+                viewer.camera_hover(x);
             }
         ));
         self.widget.add_controller(motion);
