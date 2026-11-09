@@ -60,6 +60,17 @@
   </requires>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-11-09">
+      <description>
+        <ul>
+          <li>Camera RAW photos: Canon CR2 and CR3, Sony ARW, Nikon NEF, DNG, Fujifilm, Olympus, Panasonic, Pentax and more. Thumbnails use the camera's embedded preview; fullscreen shows it at once, then the developed RAW</li>
+          <li>The metadata panel in fullscreen also works for CR3 files</li>
+          <li>The folder tree starts collapsed to the start folder at every launch</li>
+          <li>Hardware-decoded video stays on the GPU under X11 too</li>
+          <li>Fixed a memory leak in the Open With dialog</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-09">
       <description>
         <ul>
