@@ -49,13 +49,12 @@ download `fastviz_0.3.0-1_amd64.deb` and open it, or:
 sudo apt install ./fastviz_0.3.0-1_amd64.deb
 ```
 
-**Arch Linux** and distributions based on it: the
-[`fastviz`](https://aur.archlinux.org/packages/fastviz) package in the AUR
-builds it from source, with an AUR helper (`yay -S fastviz`) or by hand:
+**Arch Linux** and distributions based on it: `packaging/aur/PKGBUILD` builds
+the release from source (it will also go to the AUR as `fastviz`):
 
 ```sh
-git clone https://aur.archlinux.org/fastviz.git
-cd fastviz
+git clone https://github.com/WastedLookz/FastViz.git
+cd FastViz/packaging/aur
 makepkg -si
 ```
 
