@@ -30,15 +30,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Folder tree and thumbnail grid</caption>
-      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.1.1/data/screenshots/main.png</image>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.3.1/data/screenshots/main.png</image>
     </screenshot>
     <screenshot>
       <caption>Fullscreen viewer with the info overlay</caption>
-      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.1.1/data/screenshots/viewer.png</image>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.3.1/data/screenshots/viewer.png</image>
     </screenshot>
     <screenshot>
       <caption>Larger thumbnails</caption>
-      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.1.1/data/screenshots/grid.png</image>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.3.1/data/screenshots/grid.png</image>
     </screenshot>
   </screenshots>
   <url type="homepage">https://github.com/WastedLookz/FastViz</url>
@@ -60,6 +60,16 @@
   </requires>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.1" date="2026-11-09">
+      <description>
+        <ul>
+          <li>Thumbnails are saved from the very first launch (a new thumbnail cache could be switched off for the first session)</li>
+          <li>Photos opened from the file manager are sharp straight away in small folders</li>
+          <li>The metadata panel no longer pops up by itself when a photo opens</li>
+          <li>New screenshots</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-09">
       <description>
         <ul>
