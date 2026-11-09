@@ -2,11 +2,13 @@
 # Test-builds packaging/aur/PKGBUILD in an Arch Linux tree, without root or
 # containers: the Arch bootstrap tarball is unpacked into target/arch and
 # entered with bubblewrap (namespaced root for pacman, a plain user for
-# makepkg). The source tarball is made from this checkout's HEAD, so this
-# works before the release tag exists. Run from anywhere:
+# makepkg). The source tarball is made from this checkout (HEAD plus
+# uncommitted changes), so this works before the release tag exists. Run from anywhere:
 #   tools/test-aur.sh            build (and run the tests) once
 #   tools/test-aur.sh --update   also update the Arch tree first
 # Afterwards target/arch/build has the packages and makepkg.log.
+# packaging/aur/LICENSE (0BSD) covers the package files themselves, as the
+# AUR guidelines ask; FastViz is GPL-3.0-or-later.
 set -eu
 cd "$(dirname "$0")/.."
 top=$PWD/target/arch
@@ -57,7 +59,9 @@ fi
 version=$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)
 rm -rf "$build/src" "$build/pkg" "$build"/*.pkg.tar.zst
 cp packaging/aur/PKGBUILD "$build/"
-git archive --format=tar.gz --prefix="FastViz-$version/" -o "$build/fastviz-$version.tar.gz" HEAD
+# HEAD plus uncommitted changes to tracked files.
+tree=$(git stash create)
+git archive --format=tar.gz --prefix="FastViz-$version/" -o "$build/fastviz-$version.tar.gz" "${tree:-HEAD}"
 as_user makepkg --nodeps --noconfirm >"$build/makepkg.log" 2>&1 ||
     { tail -30 "$build/makepkg.log"; exit 1; }
 grep 'test result' "$build/makepkg.log" || true

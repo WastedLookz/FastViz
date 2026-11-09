@@ -1,0 +1,6 @@
+# For the AUR repository: everything but the package files.
+*
+!PKGBUILD
+!.SRCINFO
+!LICENSE
+!.gitignore

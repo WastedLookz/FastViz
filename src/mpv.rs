@@ -90,6 +90,7 @@ const RENDER_PARAM_API_TYPE: c_int = 1;
 const RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
 const RENDER_PARAM_OPENGL_FBO: c_int = 3;
 const RENDER_PARAM_FLIP_Y: c_int = 4;
+const RENDER_PARAM_X11_DISPLAY: c_int = 8;
 const RENDER_PARAM_WL_DISPLAY: c_int = 9;
 
 /// glibc's value; mpv refuses to start unless numbers format the C way.
@@ -417,6 +418,14 @@ impl Drop for Player {
 }
 
 /// mpv's OpenGL renderer, bound to one GL context.
+/// The window's display connection (`wl_display*` or X11 `Display*`).
+#[derive(Clone, Copy)]
+pub enum NativeDisplay {
+    Wayland(*mut c_void),
+    X11(*mut c_void),
+    None,
+}
+
 pub struct Renderer {
     context: *mut RenderContext,
     update: *mut Notify,
@@ -425,12 +434,12 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// Must be called with the GL context current. `wl_display` (or null)
-    /// lets mpv use VA-API hardware decoding on Wayland.
+    /// Must be called with the GL context current. The window's Wayland or
+    /// X11 display lets mpv use VA-API hardware decoding.
     pub fn new(
         player: &Rc<Player>,
         get_proc_address: GetProcAddress,
-        wl_display: *mut c_void,
+        display: NativeDisplay,
     ) -> Result<Self, String> {
         let mut init = OpenGlInitParams {
             get_proc_address,
@@ -446,11 +455,16 @@ impl Renderer {
                 data: (&raw mut init).cast(),
             },
         ];
-        if !wl_display.is_null() {
-            params.push(RenderParam {
+        match display {
+            NativeDisplay::Wayland(data) => params.push(RenderParam {
                 kind: RENDER_PARAM_WL_DISPLAY,
-                data: wl_display,
-            });
+                data,
+            }),
+            NativeDisplay::X11(data) => params.push(RenderParam {
+                kind: RENDER_PARAM_X11_DISPLAY,
+                data,
+            }),
+            NativeDisplay::None => {}
         }
         params.push(RenderParam {
             kind: 0,

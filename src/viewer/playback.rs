@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
-use crate::mpv::{Event, Player, Renderer, Value};
+use crate::mpv::{Event, NativeDisplay, Player, Renderer, Value};
 use crate::trace;
 
 /// Observed mpv properties, by reply id.
@@ -38,9 +38,11 @@ unsafe extern "C" {
 #[link(name = "gtk-4")]
 unsafe extern "C" {
     fn gdk_wayland_display_get_wl_display(display: *mut gdk::ffi::GdkDisplay) -> *mut c_void;
+    fn gdk_x11_display_get_xdisplay(display: *mut gdk::ffi::GdkDisplay) -> *mut c_void;
 }
 
-/// GTK draws with EGL on Wayland, so mpv resolves GL functions through it.
+/// GTK draws with EGL on Wayland and (by default) on X11, so mpv
+/// resolves GL functions through it.
 unsafe extern "C" fn get_proc_address(_ctx: *mut c_void, name: *const c_char) -> *mut c_void {
     // SAFETY: `name` is a C string from mpv.
     unsafe { eglGetProcAddress(name) }
@@ -566,13 +568,17 @@ impl Playback {
             return false;
         };
         let display = WidgetExt::display(&self.area);
-        let wl_display = if display.type_().name() == "GdkWaylandDisplay" {
-            // SAFETY: `display` is a live GdkWaylandDisplay.
-            unsafe { gdk_wayland_display_get_wl_display(display.as_ptr()) }
-        } else {
-            std::ptr::null_mut()
+        let native = match display.type_().name() {
+            // SAFETY: `display` is a live display of the named type.
+            "GdkWaylandDisplay" => NativeDisplay::Wayland(unsafe {
+                gdk_wayland_display_get_wl_display(display.as_ptr())
+            }),
+            "GdkX11Display" => {
+                NativeDisplay::X11(unsafe { gdk_x11_display_get_xdisplay(display.as_ptr()) })
+            }
+            _ => NativeDisplay::None,
         };
-        let mut renderer = match Renderer::new(player, get_proc_address, wl_display) {
+        let mut renderer = match Renderer::new(player, get_proc_address, native) {
             Ok(renderer) => renderer,
             Err(e) => {
                 eprintln!("Video playback unavailable: mpv can't render with OpenGL: {e}");
@@ -596,9 +602,16 @@ impl Playback {
         self.gl.set(Some(gl));
         self.renderer.replace(Some(renderer));
         trace!(
-            "video: OpenGL renderer ready in {:.1} ms (Wayland display: {})",
+            "video: OpenGL renderer ready in {:.1} ms ({}, {})",
             started.elapsed().as_secs_f64() * 1e3,
-            !wl_display.is_null()
+            match native {
+                NativeDisplay::Wayland(_) => "Wayland",
+                NativeDisplay::X11(_) => "X11",
+                NativeDisplay::None => "no display for VA-API",
+            },
+            self.area
+                .context()
+                .map_or("no context", |c| c.type_().name())
         );
         true
     }

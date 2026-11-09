@@ -34,7 +34,7 @@ def main():
     out = sys.argv[1]
     linked = linked_crates()
     metadata = json.loads(subprocess.run(
-        ["cargo", "metadata", "--format-version", "1"],
+        ["cargo", "metadata", "--format-version", "1", "--filter-platform", TARGET],
         check=True, capture_output=True, text=True,
     ).stdout)
     texts = collections.OrderedDict()  # license text -> crates it covers
