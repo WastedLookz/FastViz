@@ -1,6 +1,6 @@
 pkgbase = fastviz
 	pkgdesc = Fast, minimal photo and video browser for GNOME/Wayland
-	pkgver = 0.3.3
+	pkgver = 0.3.4
 	pkgrel = 1
 	url = https://github.com/WastedLookz/FastViz
 	arch = x86_64
@@ -24,7 +24,7 @@ pkgbase = fastviz
 	optdepends = gvfs: drives and phones in the folder tree, Undo after Move to Trash
 	optdepends = udisks2: mounting drives from the folder tree
 	options = !lto
-	source = fastviz-0.3.3.tar.gz::https://github.com/WastedLookz/FastViz/archive/refs/tags/v0.3.3.tar.gz
-	sha256sums = ac29185a041ce55cdd80f922103ec446de3911a0a8c5f8947b342c3c4a62f479
+	source = fastviz-0.3.4.tar.gz::https://github.com/WastedLookz/FastViz/archive/refs/tags/v0.3.4.tar.gz
+	sha256sums = 6792f8c69b2f8f6d4bf526c8d0a129d06953a1fe39987fa2bf0bbf2051843a4a
 
 pkgname = fastviz
