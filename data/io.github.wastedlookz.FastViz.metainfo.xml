@@ -21,7 +21,7 @@
       <li>Fullscreen viewer with zoom, and the next and previous items preloaded</li>
       <li>Video playback with hardware decoding</li>
       <li>JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC/HEIF and AVIF photos, and nearly any video format</li>
-      <li>Sort by name, date, date taken, format, dimensions or size; shuffle; show only pictures or videos</li>
+      <li>Sort by name, date, date taken, format, dimensions or size; shuffle; show only pictures or videos; search by name</li>
       <li>Cut, copy, paste, rename and move to Trash with undo, working together with Files</li>
       <li>Slideshows</li>
     </ul>
@@ -30,15 +30,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Folder tree and thumbnail grid</caption>
-      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.3.4/data/screenshots/main.png</image>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.4.0/data/screenshots/main.png</image>
     </screenshot>
     <screenshot>
       <caption>Fullscreen viewer with the info overlay</caption>
-      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.3.4/data/screenshots/viewer.png</image>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.4.0/data/screenshots/viewer.png</image>
     </screenshot>
     <screenshot>
       <caption>Larger thumbnails</caption>
-      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.3.4/data/screenshots/grid.png</image>
+      <image>https://raw.githubusercontent.com/WastedLookz/FastViz/v0.4.0/data/screenshots/grid.png</image>
     </screenshot>
   </screenshots>
   <url type="homepage">https://github.com/WastedLookz/FastViz</url>
@@ -60,6 +60,16 @@
   </requires>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" date="2026-11-10">
+      <description>
+        <ul>
+          <li>Search box in the header bar: shows only the items in the open folder whose names contain what you type</li>
+          <li>Fullscreen: Down zooms out below the fit size; the mouse wheel zooms around the pointer at the bottom edge of the screen</li>
+          <li>Accent Color in Preferences: the desktop theme's, or one of nine colors</li>
+          <li>The fullscreen viewer opens and closes from the middle of the screen with a fade, instead of stretching down over the taskbar</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.4" date="2026-11-09">
       <description>
         <ul>

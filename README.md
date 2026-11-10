@@ -14,7 +14,7 @@ a simple, modern GTK 4 look.
 - Folder tree and a thumbnail grid that stays smooth with tens of thousands of files
 - Home folders, every drive and your phone in the folder tree; drives mount when you open them
 - Persistent thumbnail cache; JPEGs use their embedded or scaled-down previews
-- Fullscreen viewer: shrink-to-fit, zoom and pan, next and previous items preloaded
+- Fullscreen viewer: shrink-to-fit, zoom (also below fit) and pan, next and previous items preloaded
 - Video playback with hardware decoding (VA-API), optional looping, and video thumbnails
 - Photos: JPEG, PNG, WebP, GIF (animated), BMP, TIFF, HEIC/HEIF, AVIF
 - Camera RAW (Canon CR2/CR3, Sony ARW, Nikon NEF, DNG, Fujifilm, Olympus, Panasonic, Pentax and more): thumbnails from the camera's embedded preview; fullscreen shows it at once, then the developed RAW (LibRaw)
@@ -22,6 +22,8 @@ a simple, modern GTK 4 look.
 - Videos: MP4, MOV, MKV, WebM, AVI, WMV, FLV, MPEG, TS/M2TS, OGV, 3GP and more
 - Sort by name, date modified, date taken, format, dimensions or size; shuffle
 - Show all files, or only pictures, only videos, or both
+- Search the open folder by name
+- Accent color from the desktop theme, or one of nine to pick from
 - Cut, copy, paste, rename, new folders and move to Trash with undo, working with Files
 - Properties: type, size, dimensions, dates, camera and lens; a folder's contents and total size
 - Slideshows
@@ -31,11 +33,11 @@ a simple, modern GTK 4 look.
 Both packages are on the
 [Releases](https://github.com/WastedLookz/FastViz/releases) page.
 
-**Flatpak** (most distributions): download `fastviz_0.3.4_x86_64.flatpak` and
+**Flatpak** (most distributions): download `fastviz_0.4.0_x86_64.flatpak` and
 open it in Software, or install it from a terminal:
 
 ```sh
-flatpak install --user ./fastviz_0.3.4_x86_64.flatpak
+flatpak install --user ./fastviz_0.4.0_x86_64.flatpak
 ```
 
 It needs [Flathub](https://flathub.org/setup) set up, for the GNOME runtime it
@@ -44,10 +46,10 @@ install the next release's file the same way.
 
 **Debian package** for **Ubuntu 24.04** and distributions based on it (Zorin
 OS 18, Linux Mint 22, Pop!_OS 24.04), using the system's GTK, mpv and FFmpeg:
-download `fastviz_0.3.4-1_amd64.deb` and open it, or:
+download `fastviz_0.4.0-1_amd64.deb` and open it, or:
 
 ```sh
-sudo apt install ./fastviz_0.3.4-1_amd64.deb
+sudo apt install ./fastviz_0.4.0-1_amd64.deb
 ```
 
 **Arch Linux** and distributions based on it: `packaging/aur/PKGBUILD` builds
@@ -117,7 +119,8 @@ flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
 | --- | --- |
 | Mouse wheel, Left/Right, Page Up/Down | Previous, next |
 | Home, End | First, last |
-| Up, Down | Zoom in, out (videos: volume) |
+| Up, Down | Zoom in, out, also below fit (videos: volume) |
+| Mouse wheel at the bottom edge | Zoom around the pointer |
 | Click | 100% or fit (videos: pause) |
 | 0 | Fit to the screen |
 | Space | Pause a video or the slideshow |
