@@ -9,6 +9,7 @@ use std::time::Instant;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use crate::accent::{self, Accent};
 use crate::grid::{self, Grid};
 use crate::loader::Thumbnailer;
 use crate::media::Kind;
@@ -51,6 +52,8 @@ pub struct Window {
     /// Which files show (folders always do).
     show: Rc<Cell<Show>>,
     filter: gtk::CustomFilter,
+    search: Rc<RefCell<String>>,
+    search_entry: gtk::SearchEntry,
     show_label: gtk::Label,
     show_icon: gtk::Image,
     /// Sits before the Show button, as wide as the folder pane.
@@ -76,12 +79,15 @@ pub struct Window {
     toasts: adw::ToastOverlay,
     /// What we last put on the clipboard: (paths, cut).
     clipboard: RefCell<Option<(Vec<PathBuf>, bool)>>,
-    /// The browser and the fullscreen viewer.
-    pages: gtk::Stack,
     viewer: Rc<Viewer>,
+    /// The fullscreen viewer's own window (see `open_viewer`), kept hidden
+    /// between visits, and its toasts (Trash with Undo while viewing).
+    viewer_window: adw::Window,
+    viewer_toasts: adw::ToastOverlay,
     viewer_black: Rc<Cell<bool>>,
     volume: Cell<f64>,
     loop_videos: Cell<bool>,
+    accent: Cell<Accent>,
     slideshow: Cell<SlideshowOptions>,
     /// A file opened from outside, shown once the folder scan lists it.
     pending_open: RefCell<Option<PathBuf>>,
@@ -90,12 +96,14 @@ pub struct Window {
 impl Window {
     /// Opens `initial` (a file or folder from outside) instead of the start folder.
     pub fn new(app: &adw::Application, settings: Settings, initial: Option<PathBuf>) -> Rc<Self> {
+        accent::apply(settings.accent);
         let sort = Rc::new(Cell::new((settings.sort_key, settings.sort_ascending)));
         let store = gio::ListStore::new::<FileItem>();
         let shuffle = Rc::new(Cell::new(None));
         let sorter = model::sorter(sort.clone(), shuffle.clone());
         let show = Rc::new(Cell::new(settings.show));
-        let filter = model::filter(show.clone());
+        let search = Rc::new(RefCell::new(String::new()));
+        let filter = model::filter(show.clone(), search.clone());
         let filtered = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
         let sorted = gtk::SortListModel::new(Some(filtered), Some(sorter.clone()));
         let selection = gtk::MultiSelection::new(Some(sorted));
@@ -171,6 +179,12 @@ impl Window {
             .menu_model(&sort_menu())
             .tooltip_text("Sort")
             .build();
+        // About as wide as the sort and menu buttons and the window controls.
+        let search_entry = gtk::SearchEntry::builder()
+            .placeholder_text("Search this folder")
+            .width_request(260)
+            .valign(gtk::Align::Center)
+            .build();
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
             .menu_model(&main_menu())
@@ -213,6 +227,7 @@ impl Window {
         header.pack_start(&show_start);
         header.pack_end(&menu_button);
         header.pack_end(&sort_button);
+        header.pack_end(&search_entry);
 
         let pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
         tree.widget.set_vexpand(true);
@@ -247,12 +262,8 @@ impl Window {
             settings.loop_videos,
             slideshow,
         );
-        let pages = gtk::Stack::new();
-        pages.add_named(&view, Some("browser"));
-        pages.add_named(&viewer.widget, Some("viewer"));
-        // Toasts (like Trash with Undo) show over both pages.
         let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&pages));
+        toasts.set_child(Some(&view));
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -262,6 +273,16 @@ impl Window {
             .maximized(settings.maximized)
             .content(&toasts)
             .build();
+        let viewer_toasts = adw::ToastOverlay::new();
+        viewer_toasts.set_child(Some(&viewer.widget));
+        // In the application, so its accelerators and screen-awake requests
+        // work; the main window's actions (F5, Ctrl+, ...) work in it too.
+        let viewer_window = adw::Window::builder()
+            .application(app)
+            .title("FastViz")
+            .content(&viewer_toasts)
+            .build();
+        viewer_window.insert_action_group("win", Some(&window));
 
         let this = Rc::new(Self {
             window,
@@ -284,6 +305,8 @@ impl Window {
             sort_icon,
             show,
             filter,
+            search,
+            search_entry: search_entry.clone(),
             show_label,
             show_icon,
             show_spacer,
@@ -306,11 +329,13 @@ impl Window {
             content,
             toasts,
             clipboard: RefCell::default(),
-            pages,
             viewer,
+            viewer_window,
+            viewer_toasts,
             viewer_black: Rc::new(Cell::new(settings.viewer_black)),
             volume: Cell::new(settings.volume),
             loop_videos: Cell::new(settings.loop_videos),
+            accent: Cell::new(settings.accent),
             slideshow: Cell::new(slideshow),
             pending_open: RefCell::default(),
         });
@@ -318,6 +343,27 @@ impl Window {
         this.setup_file_actions();
         this.setup_viewer();
         this.connect_signals();
+        search_entry.connect_search_changed(glib::clone!(
+            #[weak]
+            this,
+            move |entry| this.set_search(&entry.text())
+        ));
+        // Esc in the box clears it and returns to the grid; Enter too.
+        search_entry.connect_stop_search(glib::clone!(
+            #[weak]
+            this,
+            move |entry| {
+                entry.set_text("");
+                this.grid.view.grab_focus();
+            }
+        ));
+        search_entry.connect_activate(glib::clone!(
+            #[weak]
+            this,
+            move |_| {
+                this.grid.view.grab_focus();
+            }
+        ));
         this.update_sort_button();
         this.update_show_button();
         this.align_show_button();
@@ -435,7 +481,22 @@ impl Window {
         }
         self.window.present();
         self.grid.view.grab_focus();
-        trace::snapshot_on_request(self.window.upcast_ref(), 1500);
+        // The viewer stays in front (a file opened from outside, or a second
+        // launch while viewing).
+        if self.viewer.is_open() {
+            self.viewer_window.present();
+        }
+        let (window, viewer_window) = (self.window.clone(), self.viewer_window.clone());
+        trace::snapshot_on_request(
+            move || {
+                if viewer_window.is_visible() {
+                    viewer_window.upcast()
+                } else {
+                    window.clone().upcast()
+                }
+            },
+            1500,
+        );
         trace::autoscroll_on_request(&self.grid.scroller);
     }
 
@@ -538,10 +599,19 @@ impl Window {
             self,
             move |_, _| {
                 prefs::present(
-                    &this.window,
+                    &this.front(),
                     &this.startup_folder,
                     this.current.borrow().clone(),
                     prefs::Choices {
+                        accent: this.accent.get(),
+                        on_accent: Box::new(glib::clone!(
+                            #[weak]
+                            this,
+                            move |accent| {
+                                this.accent.set(accent);
+                                accent::apply(accent);
+                            }
+                        )),
                         padding: this.grid.padding(),
                         on_padding: Box::new(glib::clone!(
                             #[weak]
@@ -669,7 +739,7 @@ impl Window {
             self,
             move |message| {
                 let toast = adw::Toast::builder().title(message).timeout(8).build();
-                this.toasts.add_toast(toast);
+                this.toast(toast);
             }
         ));
 
@@ -710,8 +780,41 @@ impl Window {
         let this = self.clone();
         self.window.connect_close_request(move |_| {
             this.save_settings();
+            // Or the hidden viewer window would keep the app running.
+            this.viewer_window.destroy();
             glib::Propagation::Proceed
         });
+        // Closing the viewer window (Alt+F4) quits, as it did when the viewer
+        // was in the main window.
+        self.viewer_window.connect_close_request(glib::clone!(
+            #[weak(rename_to = window)]
+            self.window,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_| {
+                window.close();
+                glib::Propagation::Stop
+            }
+        ));
+    }
+
+    /// The window on screen: the viewer's while it is open. Dialogs that can
+    /// come up while viewing are presented over it.
+    fn front(&self) -> gtk::Window {
+        if self.viewer_window.is_visible() {
+            self.viewer_window.clone().upcast()
+        } else {
+            self.window.clone().upcast()
+        }
+    }
+
+    /// Shows `toast` over the window on screen.
+    fn toast(&self, toast: adw::Toast) {
+        if self.viewer_window.is_visible() {
+            self.viewer_toasts.add_toast(toast);
+        } else {
+            self.toasts.add_toast(toast);
+        }
     }
 
     /// Shows `path` in the grid. `reveal` also selects it in the folder tree.
@@ -736,6 +839,11 @@ impl Window {
         }
         // A shuffle is for the folder it was asked in.
         self.end_shuffle();
+        // A search is for the folder it was typed in.
+        if !self.search.borrow().is_empty() {
+            self.search.borrow_mut().clear();
+            self.search_entry.set_text("");
+        }
         self.store.remove_all();
         let rotational = storage::is_rotational(&path);
         trace!("storage: rotational = {rotational:?}");
@@ -939,14 +1047,33 @@ impl Window {
             self.empty.set_description(None);
         } else {
             self.empty.set_title(match self.show.get() {
+                _ if !self.search.borrow().is_empty() => "No Matches",
                 Show::Pictures => "No Pictures",
                 Show::Videos => "No Videos",
                 _ => "No Pictures or Videos",
             });
-            self.empty
-                .set_description(Some("Choose “All Files” at the top left to see everything"));
+            let searching = !self.search.borrow().is_empty();
+            self.empty.set_description(Some(if searching {
+                "Clear the search box to see everything"
+            } else {
+                "Choose “All Files” at the top left to see everything"
+            }));
         }
         self.stack.set_visible_child(&self.empty);
+    }
+
+    /// Shows only names containing `text` (case-insensitive); empty shows all.
+    fn set_search(&self, text: &str) {
+        let text = text.trim().to_lowercase();
+        if *self.search.borrow() == text {
+            return;
+        }
+        *self.search.borrow_mut() = text;
+        self.filter.changed(gtk::FilterChange::Different);
+        self.thumbnailer.order_changed();
+        self.update_count_status();
+        self.update_empty();
+        self.show_selection_or_top();
     }
 
     /// Shows only pictures, videos or both (folders always), or everything.
@@ -1141,7 +1268,16 @@ impl Window {
                 group_digits(total.into())
             )
         };
-        let mut text = format!("{count} {noun} [{}]", glib::format_size(bytes));
+        let searching = !self.search.borrow().is_empty();
+        let mut text = if searching && !self.scanning.get() {
+            format!(
+                "{} of {} {noun} match",
+                group_digits(self.selection.n_items().into()),
+                group_digits(total.into())
+            )
+        } else {
+            format!("{count} {noun} [{}]", glib::format_size(bytes))
+        };
         if self.scanning.get() {
             text.insert_str(0, "Loading… ");
         }
@@ -1215,6 +1351,7 @@ impl Window {
             volume: self.volume.get(),
             viewer_info: self.viewer.info_shown(),
             loop_videos: self.loop_videos.get(),
+            accent: self.accent.get(),
             slideshow_interval: self.slideshow.get().interval,
             slideshow_loop: self.slideshow.get().repeat,
             slideshow_shuffle: self.slideshow.get().shuffle,

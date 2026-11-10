@@ -657,7 +657,8 @@ impl Window {
                 move |_, _| this.run(Op::Delete(paths.clone()), Job::Delete)
             ),
         );
-        dialog.present(Some(&self.window));
+        // Over the viewer when Delete was pressed there.
+        dialog.present(Some(&self.front()));
     }
 
     /// Moves files to the Trash (with Undo), e.g. from the fullscreen viewer.
@@ -886,7 +887,7 @@ impl Window {
                     move |_| this.run(Op::Restore(gone.clone()), Job::Restore)
                 ));
             }
-            self.toasts.add_toast(toast);
+            self.toast(toast);
         }
         if let Some((path, error)) = failures.first() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -898,7 +899,7 @@ impl Window {
                 .title(format!("Couldn't handle “{name}”: {error}{more}"))
                 .timeout(8)
                 .build();
-            self.toasts.add_toast(toast);
+            self.toast(toast);
         }
     }
 }

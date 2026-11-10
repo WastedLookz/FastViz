@@ -1,6 +1,6 @@
 //! Grid items and their sort order.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -168,11 +168,17 @@ impl Show {
     }
 }
 
-/// A filter reading the shared `Show` state; call `changed` after updating it.
-pub fn filter(show: Rc<Cell<Show>>) -> gtk::CustomFilter {
+/// A filter reading the shared `Show` state and the lowercased search text
+/// (a name must contain it); call `changed` after updating either.
+pub fn filter(show: Rc<Cell<Show>>, search: Rc<RefCell<String>>) -> gtk::CustomFilter {
     gtk::CustomFilter::new(move |item| {
-        item.downcast_ref::<FileItem>()
-            .is_some_and(|item| show.get().includes(item.entry().kind))
+        item.downcast_ref::<FileItem>().is_some_and(|item| {
+            let entry = item.entry();
+            show.get().includes(entry.kind) && {
+                let search = search.borrow();
+                search.is_empty() || entry.key.contains(search.as_str())
+            }
+        })
     })
 }
 

@@ -33,21 +33,38 @@ impl Window {
     }
 
     /// Opens the photo or video at `position` (in grid order) fullscreen.
+    ///
+    /// The viewer is a window of its own, opened already fullscreen: GNOME
+    /// Shell animates a window that goes fullscreen by stretching it from its
+    /// old frame (down over the taskbar, and back up when leaving), while a
+    /// window that opens gets the shell's opening animation instead. With
+    /// the main window as its parent that is the dialog one, unfolding from
+    /// the middle of the screen while it fades in (100 ms). The grid's window
+    /// never changes size.
     pub(super) fn open_viewer(self: &Rc<Self>, position: u32) {
         crate::trace!("fullscreen: open");
         // Leave the drive to the viewer while it is open.
         self.thumbnailer.pause_background(true);
-        self.pages.set_visible_child_name("viewer");
-        self.window.fullscreen();
         let screen = self.screen_size();
+        if !self.viewer_window.is_visible() {
+            self.viewer_window.set_transient_for(Some(&self.window));
+            match self.monitor() {
+                Some(monitor) => self.viewer_window.fullscreen_on_monitor(&monitor),
+                None => self.viewer_window.fullscreen(),
+            }
+            self.viewer_window.present();
+        }
         self.viewer
             .open(self.selection.upcast_ref(), position, screen);
     }
 
     /// Back to the grid, with the last item viewed selected and in view.
     fn close_viewer(&self, item: Option<FileItem>) {
-        self.window.unfullscreen();
-        self.pages.set_visible_child_name("browser");
+        // Without a parent the shell closes it like any window: shrinking a
+        // little towards the middle while it fades out (150 ms), over the
+        // grid as it was (the dialog closing would fold it to a line).
+        self.viewer_window.set_transient_for(None::<&gtk::Window>);
+        self.viewer_window.set_visible(false);
         self.thumbnailer.pause_background(false);
         let position = item.and_then(|item| {
             (0..self.selection.n_items())
@@ -63,18 +80,21 @@ impl Window {
         self.grid.view.grab_focus();
     }
 
-    /// The monitor's size in device pixels, which previews are decoded for.
-    fn screen_size(&self) -> (u32, u32) {
+    /// The main window's monitor, which the viewer fills.
+    fn monitor(&self) -> Option<gdk::Monitor> {
         let display = WidgetExt::display(&self.window);
         // A file opened from outside can reach the viewer before the window
         // is on screen, with no surface (and no size) yet: then take the
         // first monitor, not a 1 x 1 "screen" (a blurry 1/8-scale preview).
-        let monitor = self
-            .window
+        self.window
             .surface()
             .and_then(|surface| display.monitor_at_surface(&surface))
-            .or_else(|| display.monitors().item(0).and_downcast::<gdk::Monitor>());
-        let (width, height, scale) = match monitor {
+            .or_else(|| display.monitors().item(0).and_downcast::<gdk::Monitor>())
+    }
+
+    /// The monitor's size in device pixels, which previews are decoded for.
+    fn screen_size(&self) -> (u32, u32) {
+        let (width, height, scale) = match self.monitor() {
             Some(monitor) => {
                 let geometry = monitor.geometry();
                 (geometry.width(), geometry.height(), monitor.scale_factor())

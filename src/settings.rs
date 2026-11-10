@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use gtk::glib;
 use serde::{Deserialize, Serialize};
 
+use crate::accent::Accent;
 use crate::model::{Show, SortKey};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,6 +30,8 @@ pub struct Settings {
     pub sort_ascending: bool,
     /// Which files the grid shows.
     pub show: Show,
+    /// The desktop theme's accent color, or a fixed one.
+    pub accent: Accent,
     pub thumb_size: i32,
     /// Space around each thumbnail tile, in pixels.
     pub thumb_padding: i32,
@@ -63,6 +66,7 @@ impl Default for Settings {
             sort_key: SortKey::Modified,
             sort_ascending: true,
             show: Show::All,
+            accent: Accent::System,
             thumb_size: 160,
             thumb_padding: 6,
             viewer_black: false,

@@ -29,6 +29,9 @@ use playback::Playback;
 use slideshow::Slideshow;
 pub use slideshow::SlideshowOptions;
 
+/// Logical pixels at the bottom edge where the wheel zooms.
+const BOTTOM_EDGE: f64 = 3.0;
+
 /// Zoom factor per Up/Down press.
 const ZOOM_STEP: f64 = 1.25;
 /// Pointer travel that turns a click into a drag.
@@ -875,6 +878,22 @@ impl Viewer {
         self.wheel_travel.set(travel);
     }
 
+    /// The pointer is at the very bottom edge of a photo, where the wheel zooms.
+    fn pointer_in_zoom_strip(&self) -> bool {
+        if self.video_current() || !self.pointer_in.get() {
+            return false;
+        }
+        let height = f64::from(self.widget.height());
+        self.pointer.get().1 >= height - BOTTOM_EDGE
+    }
+
+    /// Wheel zoom around the pointer (up = in).
+    fn zoom_wheel(&self, notches: f64) {
+        let (x, y) = self.pointer.get();
+        self.canvas.zoom_at(ZOOM_STEP.powf(notches), x, y);
+        self.request();
+    }
+
     /// Up/Down: zoom around the middle of the screen, or a video's volume.
     fn zoom_or_volume(&self, steps: f64) {
         if self.video_current() {
@@ -955,7 +974,12 @@ impl Viewer {
             #[upgrade_or]
             glib::Propagation::Proceed,
             move |controller, _, dy| {
-                viewer.wheel(playback::notches(controller, dy));
+                let notches = playback::notches(controller, dy);
+                if viewer.pointer_in_zoom_strip() {
+                    viewer.zoom_wheel(-notches);
+                } else {
+                    viewer.wheel(notches);
+                }
                 glib::Propagation::Stop
             }
         ));

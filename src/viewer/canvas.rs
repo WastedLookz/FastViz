@@ -9,6 +9,9 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene, gsk};
 
+/// Smallest zoom, as a fraction of the fit scale.
+const MIN_ZOOM_OF_FIT: f64 = 0.05;
+
 /// Most device pixels per image pixel when zooming in.
 const MAX_ZOOM: f64 = 32.0;
 /// The background unless B switched it to black: the grid's dark gray
@@ -177,8 +180,12 @@ impl Canvas {
         let fit = self.fit_scale();
         let max = MAX_ZOOM / f64::from(self.scale_factor());
         let old = self.scale();
-        let new = (old * factor).clamp(fit, max.max(fit));
-        if new <= fit * 1.0001 {
+        let mut new = (old * factor).clamp(fit * MIN_ZOOM_OF_FIT, max.max(fit));
+        // Passing through fit stops there once, so fit is easy to land on.
+        if (old < fit * 0.9999 && new > fit) || (old > fit * 1.0001 && new < fit) {
+            new = fit;
+        }
+        if (new / fit - 1.0).abs() < 0.0001 {
             imp.zoom.set(None);
             self.queue_draw();
             return;

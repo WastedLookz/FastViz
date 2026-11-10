@@ -33,9 +33,10 @@ macro_rules! trace {
     };
 }
 
-/// Developer aid: with `PHOTOVIEWER_SNAPSHOT=/path.png`, renders `window` to a
-/// PNG after `delay_ms` and quits, so the layout can be checked without a screenshot tool.
-pub fn snapshot_on_request(window: &gtk::Window, delay_ms: u64) {
+/// Developer aid: with `PHOTOVIEWER_SNAPSHOT=/path.png`, renders the window
+/// `pick` returns (the one on screen then) to a PNG after `delay_ms` and
+/// quits, so the layout can be checked without a screenshot tool.
+pub fn snapshot_on_request(pick: impl FnOnce() -> gtk::Window + 'static, delay_ms: u64) {
     use gtk::prelude::*;
 
     let Some(path) = std::env::var_os("PHOTOVIEWER_SNAPSHOT") else {
@@ -45,8 +46,8 @@ pub fn snapshot_on_request(window: &gtk::Window, delay_ms: u64) {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(delay_ms);
-    let window = window.clone();
     gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(delay_ms), move || {
+        let window = pick();
         let paintable = gtk::WidgetPaintable::new(Some(&window));
         let snapshot = gtk::Snapshot::new();
         paintable.snapshot(&snapshot, window.width().into(), window.height().into());

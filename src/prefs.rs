@@ -7,6 +7,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use crate::accent::Accent;
 use crate::grid;
 use crate::viewer::SlideshowOptions;
 
@@ -21,6 +22,8 @@ pub struct Startup {
 
 /// The other settings in the dialog, each applied as soon as it changes.
 pub struct Choices {
+    pub accent: Accent,
+    pub on_accent: Box<dyn Fn(Accent)>,
     pub padding: i32,
     pub on_padding: Box<dyn Fn(i32)>,
     pub black: bool,
@@ -34,12 +37,14 @@ pub struct Choices {
 /// Shows the dialog over `window`; edits apply to `startup` immediately.
 /// `current` is the folder on screen, offered as a one-click start folder.
 pub fn present(
-    window: &adw::ApplicationWindow,
+    window: &gtk::Window,
     startup: &Rc<RefCell<Startup>>,
     current: Option<PathBuf>,
     choices: Choices,
 ) {
     let Choices {
+        accent,
+        on_accent,
         padding,
         on_padding,
         black,
@@ -167,6 +172,7 @@ pub fn present(
     viewer_group.add(&loop_row);
 
     let page = adw::PreferencesPage::new();
+    page.add(&appearance_group(accent, on_accent));
     page.add(&group);
     page.add(&thumbs_group);
     page.add(&viewer_group);
@@ -174,6 +180,64 @@ pub fn present(
     let dialog = adw::PreferencesDialog::new();
     dialog.add(&page);
     dialog.present(Some(window));
+}
+
+/// Accent color: "System" (the desktop theme's) or one of nine swatches.
+fn appearance_group(accent: Accent, on_change: impl Fn(Accent) + 'static) -> adw::PreferencesGroup {
+    let row = adw::ActionRow::builder()
+        .title("Accent Color")
+        .subtitle(subtitle(accent))
+        .build();
+    let swatches = gtk::Box::builder()
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+    let on_change = Rc::new(on_change);
+    let mut first: Option<gtk::ToggleButton> = None;
+    for choice in Accent::ALL {
+        let button = gtk::ToggleButton::builder()
+            .tooltip_text(choice.name())
+            .active(choice == accent)
+            .valign(gtk::Align::Center)
+            .build();
+        if choice == Accent::System {
+            button.set_label("System");
+            button.set_tooltip_text(Some("Follow the desktop theme"));
+        } else {
+            button.set_child(Some(&gtk::Image::from_icon_name("object-select-symbolic")));
+            button.add_css_class("fv-swatch");
+            button.add_css_class(&choice.swatch_class());
+        }
+        if let Some(first) = &first {
+            button.set_group(Some(first));
+        } else {
+            first = Some(button.clone());
+        }
+        button.connect_toggled(glib::clone!(
+            #[strong]
+            on_change,
+            #[weak]
+            row,
+            move |button| {
+                if button.is_active() {
+                    row.set_subtitle(subtitle(choice));
+                    on_change(choice);
+                }
+            }
+        ));
+        swatches.append(&button);
+    }
+    row.add_suffix(&swatches);
+    let group = adw::PreferencesGroup::builder().title("Appearance").build();
+    group.add(&row);
+    group
+}
+
+fn subtitle(accent: Accent) -> &'static str {
+    match accent {
+        Accent::System => "From the desktop theme",
+        _ => accent.name(),
+    }
 }
 
 /// Interval, loop and shuffle; each change applies immediately.

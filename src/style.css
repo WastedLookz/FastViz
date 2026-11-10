@@ -1,6 +1,7 @@
 /* Neutral dark-gray look on top of libadwaita's forced dark scheme.
  * Zorin's theme tints dark surfaces with the accent hue; these are libadwaita's
- * stock neutral dark colors. The accent color is left to the system theme. */
+ * stock neutral dark colors. The accent is the system theme's unless one is
+ * picked in Preferences (accent.rs). */
 @define-color window_bg_color #242424;
 @define-color window_fg_color #ffffff;
 @define-color view_bg_color #1e1e1e;
@@ -152,4 +153,27 @@ row.fv-property .title {
 row.fv-property .subtitle {
   font-size: 1em;
   opacity: 1;
+}
+
+/* Accent swatches in Preferences; their colors come from accent.rs. The
+   check mark shows on the chosen one. */
+.fv-swatch {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  color: white;
+  box-shadow: none;
+}
+
+.fv-swatch image {
+  opacity: 0;
+}
+
+.fv-swatch:checked image {
+  opacity: 1;
+}
+
+.fv-swatch:hover {
+  filter: brightness(1.1);
 }

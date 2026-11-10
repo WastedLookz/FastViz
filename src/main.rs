@@ -1,5 +1,6 @@
 //! FastViz: a fast, minimal photo and video browser.
 
+mod accent;
 mod cache;
 mod decode;
 mod fileops;
