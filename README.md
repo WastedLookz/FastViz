@@ -34,11 +34,11 @@ a simple, modern GTK 4 look.
 Both packages are on the
 [Releases](https://github.com/WastedLookz/FastViz/releases) page.
 
-**Flatpak** (most distributions): download `fastviz_0.4.0_x86_64.flatpak` and
+**Flatpak** (most distributions): download `fastviz_0.5.0_x86_64.flatpak` and
 open it in Software, or install it from a terminal:
 
 ```sh
-flatpak install --user ./fastviz_0.4.0_x86_64.flatpak
+flatpak install --user ./fastviz_0.5.0_x86_64.flatpak
 ```
 
 It needs [Flathub](https://flathub.org/setup) set up, for the GNOME runtime it
@@ -47,10 +47,10 @@ install the next release's file the same way.
 
 **Debian package** for **Ubuntu 24.04** and distributions based on it (Zorin
 OS 18, Linux Mint 22, Pop!_OS 24.04), using the system's GTK, mpv and FFmpeg:
-download `fastviz_0.4.0-1_amd64.deb` and open it, or:
+download `fastviz_0.5.0-1_amd64.deb` and open it, or:
 
 ```sh
-sudo apt install ./fastviz_0.4.0-1_amd64.deb
+sudo apt install ./fastviz_0.5.0-1_amd64.deb
 ```
 
 **Arch Linux** and distributions based on it: `packaging/aur/PKGBUILD` builds
