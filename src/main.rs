@@ -3,6 +3,7 @@
 mod accent;
 mod cache;
 mod decode;
+mod edit;
 mod fileops;
 mod grid;
 mod libraw;

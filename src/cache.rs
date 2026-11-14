@@ -91,6 +91,16 @@ pub fn open() -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// Drops everything cached about `path` now (it was edited in place, maybe
+/// keeping its date and size, so its rows would still look valid).
+pub fn forget(path: &Path) -> rusqlite::Result<()> {
+    let conn = open()?;
+    let path = path.as_os_str().as_bytes();
+    conn.execute("DELETE FROM thumb WHERE path = ?1", params![path])?;
+    conn.execute("DELETE FROM meta WHERE path = ?1", params![path])?;
+    Ok(())
+}
+
 pub struct CachedThumb {
     pub tier: u32,
     pub encoding: Encoding,
@@ -218,6 +228,8 @@ pub enum Write {
     },
     /// A file or folder moved: its rows (and those of anything inside) follow.
     Rename { from: PathBuf, to: PathBuf },
+    /// A file changed in place: drop its rows (after any writes queued before).
+    Forget(PathBuf),
 }
 
 /// Starts the single writer thread; send it rows to store.
@@ -286,6 +298,11 @@ fn store(conn: &mut Connection, batch: Vec<Write>) -> rusqlite::Result<()> {
     for write in batch {
         match write {
             Write::Rename { from, to } => rename(&tx, &from, &to)?,
+            Write::Forget(path) => {
+                let path = path.as_os_str().as_bytes();
+                tx.execute("DELETE FROM thumb WHERE path = ?1", params![path])?;
+                tx.execute("DELETE FROM meta WHERE path = ?1", params![path])?;
+            }
             Write::Thumb {
                 key,
                 tier,

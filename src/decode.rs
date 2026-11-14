@@ -739,7 +739,7 @@ fn orientation(exif: &exif::Exif) -> u32 {
 }
 
 /// Applies EXIF orientation 1-8 so the image displays upright.
-fn orient(image: DynamicImage, orientation: u32) -> DynamicImage {
+pub fn orient(image: DynamicImage, orientation: u32) -> DynamicImage {
     match orientation {
         2 => image.fliph(),
         3 => image.rotate180(),

@@ -19,6 +19,7 @@ a simple, modern GTK 4 look.
 - Photos: JPEG, PNG, WebP, GIF (animated), BMP, TIFF, HEIC/HEIF, AVIF
 - Camera RAW (Canon CR2/CR3, Sony ARW, Nikon NEF, DNG, Fujifilm, Olympus, Panasonic, Pentax and more): thumbnails from the camera's embedded preview; fullscreen shows it at once, then the developed RAW (LibRaw)
 - Fullscreen metadata panel: push the pointer to the right edge for all of the photo's EXIF
+- Rotate photos and videos and crop photos in fullscreen, without losing quality: JPEGs turn by their orientation tag and crop losslessly, MP4/MOV clips turn by their header; the file keeps its date (JPEG, PNG, MP4, MOV, 3GP)
 - Videos: MP4, MOV, MKV, WebM, AVI, WMV, FLV, MPEG, TS/M2TS, OGV, 3GP and more
 - Sort by name, date modified, date taken, format, dimensions or size; shuffle
 - Show all files, or only pictures, only videos, or both
@@ -121,6 +122,10 @@ flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
 | Home, End | First, last |
 | Up, Down | Zoom in, out, also below fit (videos: volume) |
 | Mouse wheel at the bottom edge | Zoom around the pointer |
+| Pointer against the bottom edge | Tool strip: rotate, crop, exact zoom |
+| R, L | Rotate right, left |
+| C | Crop (then Enter to crop, Esc to cancel) |
+| Right-click | Rotate and crop menu |
 | Click | 100% or fit (videos: pause) |
 | 0 | Fit to the screen |
 | Space | Pause a video or the slideshow |

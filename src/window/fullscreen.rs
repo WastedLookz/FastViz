@@ -7,6 +7,7 @@ use gtk::{gdk, glib};
 
 use super::Window;
 use crate::model::FileItem;
+use crate::scan;
 
 impl Window {
     pub(super) fn setup_viewer(self: &Rc<Self>) {
@@ -30,6 +31,35 @@ impl Window {
             self,
             move |volume| this.volume.set(volume)
         ));
+        self.viewer.connect_edited(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            #[upgrade_or]
+            None,
+            move |old, entry| this.replace_edited(old, entry)
+        ));
+        self.viewer.connect_message(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |text| this.toast(adw::Toast::new(text))
+        ));
+    }
+
+    /// A file rotated or cropped in the viewer: its grid item is replaced by
+    /// a fresh one (new size and thumbnail; the date is kept, so it stays in
+    /// place). `None` if it isn't in the open folder any more.
+    fn replace_edited(&self, old: &FileItem, entry: scan::Entry) -> Option<FileItem> {
+        let index = (0..self.store.n_items())
+            .find(|&i| self.store.item(i).as_ref() == Some(old.upcast_ref()))?;
+        self.thumbnailer.file_changed(&entry.path);
+        self.tally([old.entry()], true);
+        self.tally([&entry], false);
+        let new = FileItem::new(entry);
+        self.thumbnailer.register(std::slice::from_ref(&new));
+        self.thumbnailer.want_metadata([&new]);
+        self.store.splice(index, 1, std::slice::from_ref(&new));
+        self.update_count_status();
+        Some(new)
     }
 
     /// Opens the photo or video at `position` (in grid order) fullscreen.

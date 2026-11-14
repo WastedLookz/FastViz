@@ -41,7 +41,7 @@ impl Viewer {
         let Some(current) = self.current.borrow().clone() else {
             return;
         };
-        if self.slideshow.borrow().is_some() {
+        if self.slideshow.borrow().is_some() || self.cropping() {
             return;
         }
         let options = self.slideshow_options.get();
@@ -92,6 +92,17 @@ impl Viewer {
         self.update_loop();
         self.request();
         self.update_overlays();
+    }
+
+    /// An item was replaced by its edited version: it keeps its place.
+    pub(super) fn slideshow_replace(&self, old: &FileItem, new: &FileItem) {
+        if let Some(slideshow) = self.slideshow.borrow_mut().as_mut() {
+            for item in &mut slideshow.order {
+                if item == old {
+                    *item = new.clone();
+                }
+            }
+        }
     }
 
     pub(super) fn slideshow_paused(&self) -> bool {

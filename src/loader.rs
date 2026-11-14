@@ -746,6 +746,12 @@ impl Thumbnailer {
         });
     }
 
+    /// A file was edited in place: drop what is cached about it (after any
+    /// thumbnail of the old version that is still queued for the cache).
+    pub fn file_changed(&self, path: &std::path::Path) {
+        let _ = self.writer.send(cache::Write::Forget(path.to_owned()));
+    }
+
     pub fn set_viewport(&self, scroller: &gtk::ScrolledWindow) {
         self.viewport.replace(Some(scroller.downgrade()));
     }

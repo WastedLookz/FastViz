@@ -131,6 +131,11 @@ fn background(black: bool) -> &'static str {
     if black { "#000000" } else { "#1e1e1e" }
 }
 
+/// mpv's extra rotation in degrees, clockwise.
+fn rotate_option(turns: u8) -> &'static str {
+    ["0", "90", "180", "270"][usize::from(turns % 4)]
+}
+
 fn loop_file(on: bool) -> &'static str {
     if on { "inf" } else { "no" }
 }
@@ -188,6 +193,8 @@ pub struct Playback {
     paused: Cell<bool>,
     eof: Cell<bool>,
     looping: Cell<bool>,
+    /// Quarter turns clockwise mpv adds to the clip's own rotation.
+    rotation: Cell<u8>,
     duration: Cell<f64>,
     volume: Cell<f64>,
     muted: Cell<bool>,
@@ -277,6 +284,7 @@ impl Playback {
             paused: Cell::new(false),
             eof: Cell::new(false),
             looping: Cell::new(false),
+            rotation: Cell::new(0),
             duration: Cell::new(0.0),
             volume: Cell::new(volume.clamp(0.0, 100.0)),
             muted: Cell::new(false),
@@ -316,8 +324,9 @@ impl Playback {
         self.on_wheel.replace(Some(Box::new(f)));
     }
 
-    /// Starts playing `path`; false if playback can't work here at all.
-    pub fn play(&self, path: &Path) -> bool {
+    /// Starts playing `path`, turned `turns` quarter turns clockwise on top
+    /// of its own rotation; false if playback can't work here at all.
+    pub fn play(&self, path: &Path, turns: u8) -> bool {
         let Some(player) = self.ensure_player() else {
             return false;
         };
@@ -341,6 +350,8 @@ impl Playback {
         self.seek.set_value(0.0);
         self.loaded_at.set(Some(Instant::now()));
         self.set_paused(&player, false);
+        self.rotation.set(turns % 4);
+        player.set_string("video-rotate", rotate_option(turns));
         if let Err(e) = player.load(path) {
             trace!("video: can't load {}: {e}", path.display());
             self.failed.set(true);
@@ -452,6 +463,16 @@ impl Playback {
         }
         self.volume_changed(volume);
         self.update_controls();
+    }
+
+    /// Turns the playing clip `turns` more quarter turns clockwise, at once
+    /// (its file is rewritten meanwhile).
+    pub fn rotate_by(&self, turns: u8) {
+        let rotation = (self.rotation.get() + turns) % 4;
+        self.rotation.set(rotation);
+        if let Some(player) = self.player.borrow().as_ref() {
+            player.set_string("video-rotate", rotate_option(rotation));
+        }
     }
 
     /// Videos start over at their end instead of stopping there.

@@ -3,13 +3,15 @@
 //! between items is instant. Until an item decodes, its grid thumbnail
 //! stands in, stretched to the same place. Videos play with mpv over the
 //! canvas, which shows their first frame until playback starts. The wheel
-//! moves between items; Up/Down zoom.
+//! moves between items; Up/Down zoom. R / L turn and C crops (`tools`).
 
 pub mod camera;
 mod canvas;
+mod crop;
 mod load;
 mod playback;
 mod slideshow;
+mod tools;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -28,6 +30,7 @@ use load::{Loaded, Pool, Request};
 use playback::Playback;
 use slideshow::Slideshow;
 pub use slideshow::SlideshowOptions;
+use tools::{Cropping, EditedHandler, Job, MessageHandler, Queue, Tools};
 
 /// Logical pixels at the bottom edge where the wheel zooms.
 const BOTTOM_EDGE: f64 = 3.0;
@@ -48,6 +51,8 @@ struct Shown {
     height: u32,
     full: bool,
     frames: Option<Rc<Vec<(gdk::Texture, u32)>>>,
+    /// Quarter turns clockwise to draw it with (turned before its file is).
+    turn: u8,
 }
 
 type ItemHandler = Box<dyn Fn(Option<FileItem>)>;
@@ -100,6 +105,15 @@ pub struct Viewer {
     slideshow_options: Cell<SlideshowOptions>,
     /// Videos loop (Preferences); a slideshow still plays each once.
     loop_videos: Cell<bool>,
+    tools: Tools,
+    /// The tool strip at the bottom edge is up.
+    tools_up: Cell<bool>,
+    cropping: Cell<Cropping>,
+    /// File edits waiting, and the one being written.
+    edits: RefCell<Queue>,
+    running: RefCell<Option<Job>>,
+    on_edited: RefCell<Option<EditedHandler>>,
+    on_message: RefCell<Option<MessageHandler>>,
 }
 
 impl Viewer {
@@ -146,15 +160,19 @@ impl Viewer {
             .css_classes(["fv-info"])
             .visible(false)
             .build();
+        let tools = Tools::new(&playback.controls);
         let widget = gtk::Overlay::builder()
             .child(&canvas)
             .focusable(true)
             .build();
         widget.add_overlay(&playback.area);
+        widget.add_overlay(&tools.crop_view);
         widget.add_overlay(&info);
         widget.add_overlay(&camera);
         widget.add_overlay(&note);
         widget.add_overlay(&playback.controls);
+        widget.add_overlay(&tools.strip);
+        widget.add_overlay(&tools.crop_bar);
 
         let viewer = Rc::new_cyclic(|me| Self {
             me: me.clone(),
@@ -190,9 +208,17 @@ impl Viewer {
             slideshow: RefCell::default(),
             slideshow_options: Cell::new(slideshow),
             loop_videos: Cell::new(loop_videos),
+            tools,
+            tools_up: Cell::new(false),
+            cropping: Cell::new(Cropping::Off),
+            edits: RefCell::default(),
+            running: RefCell::default(),
+            on_edited: RefCell::default(),
+            on_message: RefCell::default(),
         });
         viewer.update_loop();
         viewer.connect_input();
+        viewer.connect_tools();
         // A video showing its first frame (or failing) frees the drive for
         // preloading its neighbors.
         let weak = Rc::downgrade(&viewer);
@@ -302,6 +328,8 @@ impl Viewer {
     }
 
     fn exit(&self) {
+        self.end_crop();
+        self.hide_tools();
         self.stop_slideshow();
         self.stop_animation();
         self.playback.stop();
@@ -366,27 +394,48 @@ impl Viewer {
                     })
                     .unwrap_or((0, 0));
                 self.canvas.set_image(thumbnail.as_ref(), width, height);
+                // Turns not yet in its file (or being written) apply to it too.
+                self.canvas.set_turn(self.pending_turns(item.id(), true));
                 self.showing.set(0);
             }
         }
-        if !video || !self.playback.play(&item.entry().path) {
+        let turns = self.pending_turns(item.id(), true);
+        if !video || !self.playback.play(&item.entry().path, turns) {
             self.playback.stop();
         }
         self.update_overlays();
+        self.update_edit_actions();
         self.request();
         if !video {
             self.playback.show_controls(false);
         }
         self.slideshow_arm();
-        self.camera_hover(self.pointer.get().0);
+        let (x, y) = self.pointer.get();
+        self.camera_hover(x);
+        self.tools_hover(y);
     }
 
     fn display(&self, id: u64, shown: &Shown) {
+        // The crop frame sits on the picture as it is laid out now.
+        if self.cropping.get() == Cropping::On
+            && self.showing.get() == id
+            && !self
+                .canvas
+                .same_layout(shown.width, shown.height, shown.turn)
+        {
+            return;
+        }
         if self.showing.replace(id) == id {
-            self.canvas.replace_texture(&shown.texture);
+            self.canvas
+                .replace_image(&shown.texture, shown.width, shown.height, shown.turn);
         } else {
             self.canvas
                 .set_image(Some(&shown.texture), shown.width, shown.height);
+            self.canvas.set_turn(shown.turn);
+        }
+        // A crop being saved stays framed until the cropped picture is up.
+        if self.cropping.get() == Cropping::Saving && self.current_id() == Some(id) {
+            self.end_crop();
         }
         if let Some(frames) = &shown.frames {
             self.animate(frames.clone(), 0);
@@ -459,6 +508,16 @@ impl Viewer {
     }
 
     fn loaded(&self, loaded: Loaded) {
+        let id = match &loaded {
+            Loaded::Still { id, .. } | Loaded::Animation { id, .. } | Loaded::Failed { id, .. } => {
+                *id
+            }
+        };
+        // Decoded while its file was being rewritten: it may be either version.
+        if self.being_edited(id) {
+            return;
+        }
+        let turn = self.pending_turns(id, false);
         let (id, shown) = match loaded {
             Loaded::Still {
                 id,
@@ -474,6 +533,7 @@ impl Viewer {
                     height,
                     full,
                     frames: None,
+                    turn,
                 };
                 (id, shown)
             }
@@ -491,6 +551,7 @@ impl Viewer {
                     height,
                     full: true,
                     frames: Some(Rc::new(frames)),
+                    turn,
                 };
                 (id, shown)
             }
@@ -498,7 +559,9 @@ impl Viewer {
                 if !full && self.current_id() == Some(id) {
                     self.canvas.set_image(None, 0, 0);
                     self.failed.set(true);
+                    self.end_crop();
                     self.update_overlays();
+                    self.update_edit_actions();
                 }
                 return;
             }
@@ -682,7 +745,13 @@ impl Viewer {
             .cache
             .borrow()
             .get(&item.id())
-            .map(|s| (s.width, s.height))
+            .map(|s| {
+                if s.turn % 2 == 1 {
+                    (s.height, s.width)
+                } else {
+                    (s.width, s.height)
+                }
+            })
             .or_else(|| item.meta().map(|m| (m.width, m.height)));
         let mut details = vec![date, item.format().to_owned()];
         if let Some((width, height)) = size {
@@ -725,15 +794,19 @@ impl Viewer {
     /// after a moment of stillness away from the controls.
     fn pointer_moved(&self) {
         self.widget.set_cursor(None);
-        self.playback.show_controls(true);
         if let Some(timer) = self.cursor_timer.take() {
             timer.remove();
         }
+        // The pointer stays while cropping.
+        if self.cropping() {
+            return;
+        }
+        self.playback.show_controls(true);
         let me = self.me.clone();
         let timer = glib::timeout_add_local_once(CURSOR_HIDE, move || {
             if let Some(viewer) = me.upgrade() {
                 viewer.cursor_timer.take();
-                if viewer.playback.controls_hovered() {
+                if viewer.playback.controls_hovered() || viewer.tools_hovered() {
                     viewer.pointer_moved();
                     return;
                 }
@@ -762,7 +835,10 @@ impl Viewer {
         } else {
             width - 6.0
         };
-        let want = x >= edge && !self.video_current() && self.current.borrow().is_some();
+        let want = x >= edge
+            && !self.video_current()
+            && !self.cropping()
+            && self.current.borrow().is_some();
         if want == self.camera_up.get() {
             return;
         }
@@ -832,6 +908,10 @@ impl Viewer {
     /// Handles a key without Ctrl or Alt; false if it isn't ours.
     fn key_pressed(&self, key: gdk::Key) -> bool {
         use gdk::Key;
+        if self.cropping() {
+            self.crop_key(key);
+            return true;
+        }
         match key {
             Key::Escape => self.exit(),
             Key::Right | Key::Page_Down | Key::KP_Page_Down => self.go(self.neighbor(1)),
@@ -855,6 +935,9 @@ impl Viewer {
             Key::space if self.slideshow.borrow().is_some() => self.toggle_slideshow_pause(),
             Key::space if self.video_current() => self.playback.toggle_pause(),
             Key::m | Key::M if self.video_current() => self.playback.toggle_mute(),
+            Key::r | Key::R => self.rotate(1),
+            Key::l | Key::L => self.rotate(3),
+            Key::c | Key::C => self.start_crop(),
             _ => return false,
         }
         true
@@ -878,10 +961,14 @@ impl Viewer {
         self.wheel_travel.set(travel);
     }
 
-    /// The pointer is at the very bottom edge of a photo, where the wheel zooms.
+    /// The pointer is at the very bottom edge of a photo, where the wheel
+    /// zooms, or on the tool strip (which has the zoom).
     fn pointer_in_zoom_strip(&self) -> bool {
         if self.video_current() || !self.pointer_in.get() {
             return false;
+        }
+        if self.tools_hovered() {
+            return true;
         }
         let height = f64::from(self.widget.height());
         self.pointer.get().1 >= height - BOTTOM_EDGE
@@ -913,7 +1000,7 @@ impl Viewer {
     /// slideshow it stops the slideshow.
     fn clicked(&self, x: f64, y: f64) {
         // The second click of a double-click ends after we've left.
-        if !self.is_open() || self.playback.controls_at(&self.widget, x, y) {
+        if !self.is_open() || self.cropping() || self.on_bars(x, y) {
             return;
         }
         if self.slideshow.borrow().is_some() {
@@ -955,6 +1042,7 @@ impl Viewer {
                 }
                 viewer.pointer_in.set(true);
                 viewer.camera_hover(x);
+                viewer.tools_hover(y);
             }
         ));
         motion.connect_leave(glib::clone!(
@@ -963,6 +1051,7 @@ impl Viewer {
             move |_| {
                 viewer.pointer_in.set(false);
                 viewer.camera_hover(0.0);
+                viewer.tools_hover(0.0);
             }
         ));
         self.widget.add_controller(motion);
@@ -975,6 +1064,9 @@ impl Viewer {
             glib::Propagation::Proceed,
             move |controller, _, dy| {
                 let notches = playback::notches(controller, dy);
+                if viewer.cropping() {
+                    return glib::Propagation::Stop;
+                }
                 if viewer.pointer_in_zoom_strip() {
                     viewer.zoom_wheel(-notches);
                 } else {
@@ -1024,12 +1116,12 @@ impl Viewer {
             self,
             move |gesture, presses, x, y| {
                 viewer.widget.grab_focus();
+                if viewer.cropping() {
+                    return;
+                }
                 match gesture.current_button() {
-                    gdk::BUTTON_PRIMARY
-                        if presses == 2 && !viewer.playback.controls_at(&viewer.widget, x, y) =>
-                    {
-                        viewer.exit()
-                    }
+                    gdk::BUTTON_PRIMARY if presses == 2 && !viewer.on_bars(x, y) => viewer.exit(),
+                    gdk::BUTTON_SECONDARY if presses == 1 => viewer.context_menu(x, y),
                     8 => viewer.go(viewer.neighbor(-1)),
                     9 => viewer.go(viewer.neighbor(1)),
                     _ => {}

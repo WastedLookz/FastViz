@@ -1,8 +1,8 @@
 //! Minimal safe binding to the system TurboJPEG 2.x API.
 //!
 //! Ubuntu 24.04 ships libjpeg-turbo 2.1, while the `turbojpeg` crate needs
-//! 3.x, so we bind the few stable 2.x calls thumbnails need: header parsing,
-//! DCT-scaled decoding and encoding.
+//! 3.x, so we bind the few stable 2.x calls we need: header parsing,
+//! DCT-scaled decoding, encoding and lossless cropping.
 
 use std::ffi::{CStr, c_char, c_int, c_uchar, c_ulong, c_void};
 
@@ -24,9 +24,42 @@ const TJCS_YCCK: c_int = 4;
 const TJERR_WARNING: c_int = 0;
 const TJFLAG_FASTDCT: c_int = 2048;
 
+/// `tjregion` and `tjtransform` from turbojpeg.h (2.x).
+#[repr(C)]
+struct Region {
+    x: c_int,
+    y: c_int,
+    w: c_int,
+    h: c_int,
+}
+
+#[repr(C)]
+struct Transform {
+    r: Region,
+    op: c_int,
+    options: c_int,
+    data: *mut c_void,
+    /// A custom filter function; always null here.
+    custom_filter: *mut c_void,
+}
+
+const TJXOP_NONE: c_int = 0;
+const TJXOPT_CROP: c_int = 4;
+
 #[link(name = "turbojpeg")]
 unsafe extern "C" {
     fn tjInitDecompress() -> Handle;
+    fn tjInitTransform() -> Handle;
+    fn tjTransform(
+        handle: Handle,
+        jpeg: *const c_uchar,
+        size: c_ulong,
+        count: c_int,
+        dst: *mut *mut c_uchar,
+        dst_sizes: *mut c_ulong,
+        transforms: *mut Transform,
+        flags: c_int,
+    ) -> c_int;
     fn tjInitCompress() -> Handle;
     fn tjDestroy(handle: Handle) -> c_int;
     fn tjDecompressHeader3(
@@ -257,6 +290,112 @@ impl Drop for Encoder {
     }
 }
 
+/// Lossless JPEG cropping: the compressed blocks are copied, not decoded
+/// and recompressed. All markers (EXIF, ICC, XMP) are copied along.
+pub struct Transformer(Handle);
+
+/// A JPEG's stored size and its MCU block size (a crop's left and top edges
+/// must sit on that grid).
+#[derive(Clone, Copy, Debug)]
+pub struct Blocks {
+    pub width: u32,
+    pub height: u32,
+    pub mcu: (u32, u32),
+}
+
+impl Transformer {
+    pub fn new() -> Option<Self> {
+        // SAFETY: plain constructor; null means failure.
+        let handle = unsafe { tjInitTransform() };
+        (!handle.is_null()).then_some(Self(handle))
+    }
+
+    pub fn blocks(&mut self, jpeg: &[u8]) -> Result<Blocks, String> {
+        let (mut width, mut height, mut subsamp, mut colorspace) = (0, 0, 0, 0);
+        // SAFETY: as in `Decoder::header`; a transform handle reads headers too.
+        let status = unsafe {
+            tjDecompressHeader3(
+                self.0,
+                jpeg.as_ptr(),
+                jpeg.len() as c_ulong,
+                &mut width,
+                &mut height,
+                &mut subsamp,
+                &mut colorspace,
+            )
+        };
+        if status != 0 || width <= 0 || height <= 0 {
+            return Err(error_string(self.0));
+        }
+        // tjMCUWidth / tjMCUHeight for TJSAMP_444, 422, 420, GRAY, 440, 411.
+        let mcu = match subsamp {
+            0 | 3 => (8, 8),
+            1 => (16, 8),
+            2 => (16, 16),
+            4 => (8, 16),
+            5 => (32, 8),
+            _ => return Err("unusual chroma subsampling".to_owned()),
+        };
+        Ok(Blocks {
+            width: width as u32,
+            height: height as u32,
+            mcu,
+        })
+    }
+
+    /// The region (x, y, width, height) of the stored image; x and y must be
+    /// multiples of the MCU size.
+    pub fn crop(&mut self, jpeg: &[u8], region: (u32, u32, u32, u32)) -> Result<Vec<u8>, String> {
+        let (x, y, w, h) = region;
+        let mut transform = Transform {
+            r: Region {
+                x: x as c_int,
+                y: y as c_int,
+                w: w as c_int,
+                h: h as c_int,
+            },
+            op: TJXOP_NONE,
+            options: TJXOPT_CROP,
+            data: std::ptr::null_mut(),
+            custom_filter: std::ptr::null_mut(),
+        };
+        let mut out: *mut c_uchar = std::ptr::null_mut();
+        let mut size: c_ulong = 0;
+        // SAFETY: one transform with one output; TurboJPEG allocates `out`,
+        // which we copy and free below.
+        let status = unsafe {
+            tjTransform(
+                self.0,
+                jpeg.as_ptr(),
+                jpeg.len() as c_ulong,
+                1,
+                &mut out,
+                &mut size,
+                &mut transform,
+                0,
+            )
+        };
+        let result = if status == 0 && !out.is_null() {
+            // SAFETY: TurboJPEG wrote `size` bytes to `out`.
+            Ok(unsafe { std::slice::from_raw_parts(out, size as usize) }.to_vec())
+        } else {
+            Err(error_string(self.0))
+        };
+        if !out.is_null() {
+            // SAFETY: `out` was allocated by TurboJPEG.
+            unsafe { tjFree(out) };
+        }
+        result
+    }
+}
+
+impl Drop for Transformer {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from tjInitTransform and is destroyed once.
+        unsafe { tjDestroy(self.0) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +432,29 @@ mod tests {
                 .decode_scaled(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0], 128)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn crops_losslessly() {
+        let image = RgbImage::from_fn(640, 480, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 64])
+        });
+        let jpeg = Encoder::new().unwrap().encode(&image, 90).unwrap();
+        let mut transformer = Transformer::new().unwrap();
+        let blocks = transformer.blocks(&jpeg).unwrap();
+        assert_eq!(
+            (blocks.width, blocks.height, blocks.mcu),
+            (640, 480, (16, 16))
+        );
+        let cropped = transformer.crop(&jpeg, (32, 48, 301, 199)).unwrap();
+        let mut decoder = Decoder::new().unwrap();
+        let header = decoder.header(&cropped).unwrap();
+        assert_eq!((header.width, header.height), (301, 199));
+        // The same pixels as decoding the whole image and cropping it (away
+        // from the edges, where chroma upsampling sees other neighbors).
+        let whole = decoder.decode_scaled(&jpeg, 10_000).unwrap();
+        let part = decoder.decode_scaled(&cropped, 10_000).unwrap();
+        assert_eq!(part.get_pixel(100, 100), whole.get_pixel(132, 148));
+        assert!(transformer.crop(&jpeg, (5, 0, 100, 100)).is_err());
     }
 }
