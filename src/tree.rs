@@ -263,6 +263,13 @@ impl FolderTree {
     /// Brings the drives up to date after something was plugged in, mounted
     /// or removed. Only changed rows are touched, so expanded drives stay open.
     fn sync_devices(&self) {
+        // Rows coming and going must never count as the user picking a folder.
+        let was_quiet = self.quiet.replace(true);
+        self.sync_devices_inner();
+        self.quiet.set(was_quiet);
+    }
+
+    fn sync_devices_inner(&self) {
         let start = self.fixed.get();
         let devices = devices(&self.monitor);
         for i in (start..self.roots.n_items().saturating_sub(1)).rev() {
@@ -550,6 +557,7 @@ impl FolderTree {
                     return;
                 };
                 tree.reveal.replace(None);
+                crate::trace!("tree selection: {}", node.path().display());
                 if node.imp().volume.get().is_some() {
                     tree.open_volume(&node);
                     return;
@@ -673,6 +681,7 @@ impl FolderTree {
         if added.is_empty() && removed.is_empty() {
             return;
         }
+        let was_quiet = self.quiet.replace(true);
         let mut new_nodes = Vec::new();
         // Visit the roots and every listed folder; the same folder can sit under several roots.
         let mut nodes: Vec<FolderNode> = self.roots.iter::<FolderNode>().flatten().collect();
@@ -720,6 +729,7 @@ impl FolderTree {
                 node.set_leaf(true);
             }
         }
+        self.quiet.set(was_quiet);
         probe_leaves(new_nodes, show_hidden);
     }
 

@@ -141,6 +141,70 @@ fn run(
     Ok(())
 }
 
+/// Searches below `dir` for names containing `needle` (lowercase), on a
+/// worker. Reports matches in subfolders only (the folder's own items are
+/// already listed); doesn't follow symlinks or enter other filesystems.
+pub fn search(dir: PathBuf, needle: String, show_hidden: bool) -> Scan {
+    use std::os::unix::fs::MetadataExt as _;
+    let (tx, rx) = async_channel::unbounded();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
+    std::thread::Builder::new()
+        .name("search".into())
+        .spawn(move || {
+            let device = fs::metadata(&dir).map(|m| m.dev()).ok();
+            let mut pending = vec![dir.clone()];
+            let mut batch = Vec::new();
+            let mut last_flush = Instant::now();
+            while let Some(folder) = pending.pop() {
+                let Ok(entries) = fs::read_dir(&folder) else {
+                    continue;
+                };
+                for dirent in entries.flatten() {
+                    if flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let name = dirent.file_name().to_string_lossy().into_owned();
+                    if !show_hidden && is_hidden(&name) {
+                        continue;
+                    }
+                    let Ok(file_type) = dirent.file_type() else {
+                        continue;
+                    };
+                    let is_dir = file_type.is_dir();
+                    let wanted = folder != dir && name.to_lowercase().contains(&needle);
+                    if !is_dir && !wanted {
+                        continue;
+                    }
+                    let Ok(metadata) = dirent.metadata() else {
+                        continue;
+                    };
+                    if is_dir && Some(metadata.dev()) == device {
+                        pending.push(dirent.path());
+                    }
+                    if wanted && let Some(entry) = make_entry(dirent.path(), name, &metadata) {
+                        batch.push(entry);
+                    }
+                }
+                if !batch.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
+                    let full = std::mem::take(&mut batch);
+                    if tx.send_blocking(ScanMsg::Batch(full)).is_err() {
+                        return;
+                    }
+                    last_flush = Instant::now();
+                }
+            }
+            if !batch.is_empty() {
+                let _ = tx.send_blocking(ScanMsg::Batch(batch));
+            }
+            if !flag.load(Ordering::Relaxed) {
+                let _ = tx.send_blocking(ScanMsg::Done(Ok(())));
+            }
+        })
+        .expect("failed to spawn search thread");
+    Scan { rx, cancel }
+}
+
 /// The entry for one path, e.g. a file just pasted or renamed.
 pub fn entry_for(path: &Path) -> Option<Entry> {
     let metadata = fs::metadata(path).ok()?;

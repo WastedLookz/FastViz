@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -64,6 +64,11 @@ pub struct Window {
     size: gtk::Adjustment,
     pane_width: Cell<i32>,
     show_hidden: Cell<bool>,
+    /// The search box also looks in subfolders.
+    search_subfolders: Cell<bool>,
+    /// The running subfolder search (debounce, then walk), and whether it is still going.
+    sub_task: RefCell<Option<glib::JoinHandle<()>>>,
+    sub_running: Cell<bool>,
     startup_folder: Rc<RefCell<Startup>>,
     current: RefCell<Option<PathBuf>>,
     scan_task: RefCell<Option<glib::JoinHandle<()>>>,
@@ -181,7 +186,7 @@ impl Window {
             .build();
         // About as wide as the sort and menu buttons and the window controls.
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Search this folder")
+            .placeholder_text("Search")
             .width_request(260)
             .valign(gtk::Align::Center)
             .build();
@@ -316,6 +321,9 @@ impl Window {
             size,
             pane_width: Cell::new(settings.pane_width),
             show_hidden: Cell::new(settings.show_hidden),
+            search_subfolders: Cell::new(settings.search_subfolders),
+            sub_task: RefCell::default(),
+            sub_running: Cell::new(false),
             startup_folder: Rc::new(RefCell::new(Startup {
                 folder: settings.start_folder.as_ref().map(PathBuf::from),
                 open_last: settings.open_last_folder,
@@ -593,6 +601,21 @@ impl Window {
             ),
         );
 
+        let search_subfolders = toggle_action(
+            "search-subfolders",
+            settings.search_subfolders,
+            glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |on| {
+                    this.search_subfolders.set(on);
+                    this.restart_sub_search();
+                    this.update_count_status();
+                    this.update_empty();
+                }
+            ),
+        );
+
         let preferences = gio::SimpleAction::new("preferences", None);
         preferences.connect_activate(glib::clone!(
             #[weak(rename_to = this)]
@@ -689,6 +712,7 @@ impl Window {
             show_hidden,
             show_pane,
             shuffle,
+            search_subfolders,
             preferences,
             slideshow,
             go_up,
@@ -822,6 +846,12 @@ impl Window {
         if self.current.borrow().as_ref() == Some(&path) {
             return;
         }
+        trace!(
+            "navigate: {} (from {:?}, reveal {reveal}, walking {})",
+            path.display(),
+            self.current.borrow(),
+            self.walking.get()
+        );
         if !self.walking.get()
             && self.history.borrow().0.get(self.history.borrow().1) != Some(&path)
         {
@@ -840,6 +870,7 @@ impl Window {
         // A shuffle is for the folder it was asked in.
         self.end_shuffle();
         // A search is for the folder it was typed in.
+        self.stop_sub_search();
         if !self.search.borrow().is_empty() {
             self.search.borrow_mut().clear();
             self.search_entry.set_text("");
@@ -977,7 +1008,7 @@ impl Window {
         {
             // Re-sort live as metadata streams in, at most a few times a second.
             glib::timeout_add_local_once(
-                std::time::Duration::from_millis(300),
+                Duration::from_millis(300),
                 glib::clone!(
                     #[weak(rename_to = this)]
                     self,
@@ -1063,17 +1094,79 @@ impl Window {
     }
 
     /// Shows only names containing `text` (case-insensitive); empty shows all.
-    fn set_search(&self, text: &str) {
+    fn set_search(self: &Rc<Self>, text: &str) {
         let text = text.trim().to_lowercase();
         if *self.search.borrow() == text {
             return;
         }
         *self.search.borrow_mut() = text;
+        self.restart_sub_search();
         self.filter.changed(gtk::FilterChange::Different);
         self.thumbnailer.order_changed();
         self.update_count_status();
         self.update_empty();
         self.show_selection_or_top();
+    }
+
+    /// Stops a subfolder search, if one runs, and drops its results.
+    fn stop_sub_search(&self) {
+        self.sub_running.set(false);
+        if let Some(task) = self.sub_task.take() {
+            task.abort();
+        }
+    }
+
+    /// Stops and clears the subfolder results, then searches the open
+    /// folder's subfolders for the current text (after a short pause, so
+    /// typing doesn't start a walk per key).
+    fn restart_sub_search(self: &Rc<Self>) {
+        self.stop_sub_search();
+        // Everything in the store from outside the open folder is a result.
+        let folder = self.current.borrow().clone();
+        for index in (0..self.store.n_items()).rev() {
+            if let Some(item) = self.store.item(index).and_downcast::<FileItem>()
+                && item.entry().path.parent() != folder.as_deref()
+            {
+                self.store.remove(index);
+            }
+        }
+        let needle = self.search.borrow().clone();
+        let Some(folder) = folder.filter(|_| self.search_subfolders.get() && !needle.is_empty())
+        else {
+            return;
+        };
+        self.sub_running.set(true);
+        let weak = Rc::downgrade(self);
+        let show_hidden = self.show_hidden.get();
+        let task = glib::spawn_future_local(async move {
+            glib::timeout_future(Duration::from_millis(250)).await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let scan = scan::search(folder, needle, show_hidden);
+            drop(this);
+            while let Ok(msg) = scan.rx.recv().await {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                match msg {
+                    ScanMsg::Batch(entries) => {
+                        let items: Vec<FileItem> = entries.into_iter().map(FileItem::new).collect();
+                        this.thumbnailer.register(&items);
+                        if this.sort.get().0.needs_meta() {
+                            this.thumbnailer.want_metadata(&items);
+                        }
+                        this.keeping_top(|| this.store.extend_from_slice(&items));
+                    }
+                    ScanMsg::Done(_) => {
+                        this.sub_running.set(false);
+                    }
+                }
+                this.update_count_status();
+                this.update_empty();
+            }
+        });
+        self.sub_task.replace(Some(task));
     }
 
     /// Shows only pictures, videos or both (folders always), or everything.
@@ -1269,7 +1362,16 @@ impl Window {
             )
         };
         let searching = !self.search.borrow().is_empty();
-        let mut text = if searching && !self.scanning.get() {
+        let mut text = if searching && self.search_subfolders.get() && !self.scanning.get() {
+            let matches = self.selection.n_items();
+            let noun = if matches == 1 { "object" } else { "objects" };
+            let more = if self.sub_running.get() {
+                ", searching subfolders…"
+            } else {
+                " (with subfolders)"
+            };
+            format!("{} {noun} match{more}", group_digits(matches.into()))
+        } else if searching && !self.scanning.get() {
             format!(
                 "{} of {} {noun} match",
                 group_digits(self.selection.n_items().into()),
@@ -1342,6 +1444,7 @@ impl Window {
             },
             pane_visible,
             show_hidden: self.show_hidden.get(),
+            search_subfolders: self.search_subfolders.get(),
             sort_key,
             sort_ascending,
             show: self.show.get(),
@@ -1420,6 +1523,7 @@ fn main_menu() -> gio::Menu {
     let view = gio::Menu::new();
     view.append(Some("Show Hidden Folders"), Some("win.show-hidden"));
     view.append(Some("Show Folder Pane"), Some("win.show-pane"));
+    view.append(Some("Search Subfolders"), Some("win.search-subfolders"));
     menu.append_section(None, &view);
     let app = gio::Menu::new();
     app.append(Some("Preferences"), Some("win.preferences"));

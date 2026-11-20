@@ -91,6 +91,7 @@ impl Window {
         });
         add_for_folder("paste-into", |this, folder| this.paste_into(folder));
         add_for_folder("new-folder-in", |this, folder| this.new_folder(folder));
+        add_for_folder("rename-folder", |this, folder| this.rename_folder(folder));
         add_for_folder("folder-properties", |this, folder| {
             this.show_folder_properties(folder)
         });
@@ -129,7 +130,8 @@ impl Window {
         self.paned.add_controller(pane_keys);
         // The tree's keys act on its selected folder, which is the open one.
         let tree_keys = gtk::ShortcutController::new();
-        let tree_bindings: [(&str, FolderAction); 4] = [
+        let tree_bindings: [(&str, FolderAction); 5] = [
+            ("F2", |this, folder| this.rename_folder(folder)),
             ("<Control>x", |this, folder| this.copy_folder(folder, true)),
             ("<Control>c", |this, folder| this.copy_folder(folder, false)),
             ("<Control>v", |this, folder| this.paste_into(folder)),
@@ -175,6 +177,11 @@ impl Window {
                 let menu = gio::Menu::new();
                 menu.append_section(None, &new);
                 menu.append_section(None, &edit);
+                if !this.tree.is_root(&folder) {
+                    let rename = gio::Menu::new();
+                    rename.append_item(&folder_item("Rename…", "win.rename-folder", &folder));
+                    menu.append_section(None, &rename);
+                }
                 let properties = gio::Menu::new();
                 properties.append_item(&folder_item(
                     "Properties",
@@ -510,7 +517,25 @@ impl Window {
             return;
         };
         let entry = item.entry();
-        let (path, name) = (entry.path.clone(), entry.name.clone());
+        self.rename_dialog(
+            entry.path.clone(),
+            entry.name.clone(),
+            entry.kind == Kind::Folder,
+        );
+    }
+
+    /// Renames a folder picked in the tree (not Home, drives or Computer).
+    fn rename_folder(self: &Rc<Self>, folder: PathBuf) {
+        if self.tree.is_root(&folder) {
+            return;
+        }
+        let Some(name) = folder.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            return;
+        };
+        self.rename_dialog(folder, name, true);
+    }
+
+    fn rename_dialog(self: &Rc<Self>, path: PathBuf, name: String, is_folder: bool) {
         let field = gtk::Entry::builder()
             .text(&name)
             .activates_default(true)
@@ -545,7 +570,7 @@ impl Window {
 
         // Select the name without its extension, as file managers do.
         let stem = match name.rfind('.') {
-            Some(dot) if dot > 0 && entry.kind != Kind::Folder => name[..dot].chars().count(),
+            Some(dot) if dot > 0 && !is_folder => name[..dot].chars().count(),
             _ => name.chars().count(),
         };
         // GTK selects all text when the field gets focus, which happens as the

@@ -23,6 +23,8 @@ pub struct Settings {
     pub pane_width: i32,
     pub pane_visible: bool,
     pub show_hidden: bool,
+    /// The search box also looks in subfolders.
+    pub search_subfolders: bool,
     pub sort_key: SortKey,
     /// Largest first (newest, Z to A), which the user calls ascending. It is
     /// the old `sort_desc` value, so saved settings keep their order.
@@ -63,6 +65,7 @@ impl Default for Settings {
             pane_width: 260,
             pane_visible: true,
             show_hidden: false,
+            search_subfolders: true,
             sort_key: SortKey::Modified,
             sort_ascending: true,
             show: Show::All,
