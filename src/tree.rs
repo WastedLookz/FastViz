@@ -55,6 +55,10 @@ pub struct FolderTree {
     pending: RefCell<HashSet<RowKey>>,
     /// Set while selecting programmatically so it doesn't count as navigation.
     quiet: Cell<bool>,
+    /// When the pointer or keyboard last acted on the tree. A selection
+    /// change without one is GTK's own (focus returning, rows changing) and
+    /// must not open a folder.
+    last_input: Cell<Option<std::time::Instant>>,
     on_select: RefCell<Option<SelectHandler>>,
     on_context: RefCell<Option<ContextHandler>>,
     on_error: RefCell<Option<ErrorHandler>>,
@@ -106,6 +110,7 @@ impl FolderTree {
                     .collect(),
             ),
             quiet: Cell::new(false),
+            last_input: Cell::new(None),
             on_select: RefCell::default(),
             on_context: RefCell::default(),
             on_error: RefCell::default(),
@@ -556,8 +561,18 @@ impl FolderTree {
                 let Some(node) = row.item().and_downcast::<FolderNode>() else {
                     return;
                 };
+                let by_user = tree
+                    .last_input
+                    .get()
+                    .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(700));
+                crate::trace!(
+                    "tree selection: {} (by user input: {by_user})",
+                    node.path().display()
+                );
+                if !by_user {
+                    return;
+                }
                 tree.reveal.replace(None);
-                crate::trace!("tree selection: {}", node.path().display());
                 if node.imp().volume.get().is_some() {
                     tree.open_volume(&node);
                     return;
@@ -567,6 +582,35 @@ impl FolderTree {
                 }
             }
         ));
+
+        // Remember real input on the tree (before the rows see it).
+        let click = gtk::GestureClick::builder()
+            .button(0)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let note = glib::clone!(
+            #[weak(rename_to = tree)]
+            self,
+            move || tree.last_input.set(Some(std::time::Instant::now()))
+        );
+        click.connect_pressed(glib::clone!(
+            #[strong]
+            note,
+            move |_, _, _, _| note()
+        ));
+        click.connect_released(glib::clone!(
+            #[strong]
+            note,
+            move |_, _, _, _| note()
+        ));
+        self.view.add_controller(click);
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        keys.connect_key_pressed(move |_, _, _, _| {
+            note();
+            glib::Propagation::Proceed
+        });
+        self.view.add_controller(keys);
 
         // Enter or double-click toggles expansion.
         self.view.connect_activate(glib::clone!(
