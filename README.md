@@ -18,7 +18,7 @@ a simple, modern GTK 4 look.
 - Video playback with hardware decoding (VA-API), optional looping, and video thumbnails
 - Photos: JPEG, PNG, WebP, GIF (animated), BMP, TIFF, HEIC/HEIF, AVIF
 - Camera RAW (Canon CR2/CR3, Sony ARW, Nikon NEF, DNG, Fujifilm, Olympus, Panasonic, Pentax and more): thumbnails from the camera's embedded preview; fullscreen shows it at once, then the developed RAW (LibRaw)
-- Fullscreen metadata panel: push the pointer to the right edge for all of the photo's EXIF
+- Fullscreen metadata panel: push the pointer to the right edge for all of a photo's EXIF, or everything about a video (container, codecs, size, frame rate, color and HDR, audio, tags such as camera, place and date, chapters)
 - Rotate photos and videos and crop photos in fullscreen, without losing quality: JPEGs turn by their orientation tag and crop losslessly, MP4/MOV clips turn by their header; the file keeps its date (JPEG, PNG, MP4, MOV, 3GP)
 - Videos: MP4, MOV, MKV, WebM, AVI, WMV, FLV, MPEG, TS/M2TS, OGV, 3GP and more
 - Sort by name, date modified, date taken, format, dimensions or size; shuffle
@@ -27,7 +27,7 @@ a simple, modern GTK 4 look.
 - Accent color from the desktop theme, or one of nine to pick from
 - Cut, copy, paste, rename, new folders and move to Trash with undo, working with Files
 - Properties: type, size, dimensions, dates, camera and lens; a folder's contents and total size
-- Slideshows
+- Slideshows, optionally stretching smaller photos to fill the screen
 
 ## Install
 
@@ -121,7 +121,7 @@ flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
 | Mouse wheel, Left/Right, Page Up/Down | Previous, next |
 | Home, End | First, last |
 | Up, Down | Zoom in, out, also below fit (videos: volume) |
-| Mouse wheel at the bottom edge | Zoom around the pointer |
+| Mouse wheel at the bottom edge | Zoom around the middle of the screen |
 | Pointer against the bottom edge | Tool strip: rotate, crop, exact zoom |
 | R, L | Rotate right, left |
 | C | Crop (then Enter to crop, Esc to cancel) |

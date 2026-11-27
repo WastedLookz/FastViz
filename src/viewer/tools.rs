@@ -431,22 +431,30 @@ impl Viewer {
     }
 
     /// Whether (x, y) is on one of the bars (video controls, tool strip,
-    /// crop bar), where clicks aren't the picture's.
+    /// crop bar) or the metadata panel, where clicks aren't the picture's.
     pub(super) fn on_bars(&self, x: f64, y: f64) -> bool {
-        if self.playback.controls_at(&self.widget, x, y) {
-            return true;
-        }
-        let Some(picked) = self.widget.pick(x, y, gtk::PickFlags::DEFAULT) else {
-            return false;
-        };
-        [&self.tools.strip, &self.tools.crop_bar]
+        self.playback.controls_at(&self.widget, x, y)
+            || [
+                self.tools.strip.upcast_ref::<gtk::Widget>(),
+                self.tools.crop_bar.upcast_ref(),
+                self.details.upcast_ref(),
+            ]
             .iter()
-            .any(|bar| bar.is_visible() && (&picked == *bar || picked.is_ancestor(*bar)))
+            .any(|bar| self.is_on(bar, x, y))
+    }
+
+    /// Whether (x, y) is on `bar`, which is up.
+    fn is_on(&self, bar: &gtk::Widget, x: f64, y: f64) -> bool {
+        bar.is_visible()
+            && self
+                .widget
+                .pick(x, y, gtk::PickFlags::DEFAULT)
+                .is_some_and(|picked| &picked == bar || picked.is_ancestor(bar))
     }
 
     pub(super) fn tools_hovered(&self) -> bool {
         let (x, y) = self.pointer.get();
-        self.tools_up.get() && self.on_bars(x, y)
+        self.tools_up.get() && self.is_on(self.tools.strip.upcast_ref(), x, y)
     }
 
     /// Pushing the pointer against the bottom edge of a photo brings up the
@@ -694,8 +702,8 @@ impl Viewer {
                 self.showing.set(new.id());
             }
         }
-        if self.camera_for.get() == old.id() {
-            self.camera_for.set(0);
+        if self.details_for.get() == old.id() {
+            self.details_for.set(0);
         }
         if self.current.borrow().as_ref() == Some(old) {
             self.current.replace(Some(new.clone()));
@@ -732,8 +740,8 @@ impl Viewer {
         };
         self.cropping.set(Cropping::On);
         self.hide_tools();
-        if self.camera_up.replace(false) {
-            self.camera.set_visible(false);
+        if self.details_up.replace(false) {
+            self.details.set_visible(false);
         }
         if let Some(timer) = self.cursor_timer.take() {
             timer.remove();

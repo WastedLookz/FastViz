@@ -19,6 +19,8 @@ pub struct SlideshowOptions {
     /// Start over after the last item.
     pub repeat: bool,
     pub shuffle: bool,
+    /// Photos smaller than the screen are scaled up to fill it.
+    pub stretch: bool,
 }
 
 pub(super) struct Slideshow {
@@ -61,8 +63,8 @@ impl Viewer {
                 Some((app, cookie))
             });
         trace!(
-            "slideshow: start, {} s per photo, loop {}, shuffle {}",
-            options.interval, options.repeat, options.shuffle
+            "slideshow: start, {} s per photo, loop {}, shuffle {}, stretch {}",
+            options.interval, options.repeat, options.shuffle, options.stretch
         );
         self.slideshow.replace(Some(Slideshow {
             options,
@@ -72,6 +74,9 @@ impl Viewer {
             inhibit,
         }));
         self.update_loop();
+        if options.stretch && !self.video_current() {
+            self.canvas.set_fill(true);
+        }
         self.playback.set_pause(false);
         self.request();
         self.slideshow_arm();
@@ -103,6 +108,15 @@ impl Viewer {
                 }
             }
         }
+    }
+
+    /// Photos fill the screen (scaled up if smaller) while the slideshow
+    /// runs. The item on screen when it stops stays as it is drawn.
+    pub(super) fn slideshow_stretches(&self) -> bool {
+        self.slideshow
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.options.stretch)
     }
 
     pub(super) fn slideshow_paused(&self) -> bool {

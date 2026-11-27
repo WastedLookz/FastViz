@@ -32,7 +32,8 @@ mod imp {
         /// The image point at the middle of the view while zoomed.
         pub center: Cell<(f64, f64)>,
         pub black: Cell<bool>,
-        /// Fit by scaling up too (videos, matching mpv), not only down.
+        /// Fit by scaling up too (videos, matching mpv, and photos in a
+        /// slideshow set to stretch), not only down.
         pub fill: Cell<bool>,
         /// Quarter turns clockwise to draw the texture with.
         pub turn: Cell<u8>,
@@ -218,7 +219,8 @@ impl Canvas {
         self.imp().black.get()
     }
 
-    /// Videos fit the screen like mpv draws them, small ones scaled up.
+    /// Fit the screen scaling up too: videos (like mpv draws them) and
+    /// photos in a stretching slideshow.
     pub fn set_fill(&self, fill: bool) {
         self.imp().fill.set(fill);
         self.changed();

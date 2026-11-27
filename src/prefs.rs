@@ -240,7 +240,7 @@ fn subtitle(accent: Accent) -> &'static str {
     }
 }
 
-/// Interval, loop and shuffle; each change applies immediately.
+/// Interval, loop, shuffle and stretch; each change applies immediately.
 fn slideshow_group(
     options: SlideshowOptions,
     on_change: impl Fn(SlideshowOptions) + 'static,
@@ -268,6 +268,11 @@ fn slideshow_group(
         .subtitle("Random order")
         .active(options.shuffle)
         .build();
+    let stretch = adw::SwitchRow::builder()
+        .title("Stretch to Fit")
+        .subtitle("Scale smaller photos up to fill the screen")
+        .active(options.stretch)
+        .build();
     let state = Rc::new(Cell::new(options));
     let on_change = Rc::new(on_change);
     let update = move |change: &dyn Fn(&mut SlideshowOptions)| {
@@ -287,12 +292,18 @@ fn slideshow_group(
         update,
         move |row| update(&|o| o.repeat = row.is_active())
     ));
-    shuffle.connect_active_notify(move |row| update(&|o| o.shuffle = row.is_active()));
+    shuffle.connect_active_notify(glib::clone!(
+        #[strong]
+        update,
+        move |row| update(&|o| o.shuffle = row.is_active())
+    ));
+    stretch.connect_active_notify(move |row| update(&|o| o.stretch = row.is_active()));
 
     let group = adw::PreferencesGroup::builder().title("Slideshow").build();
     group.add(&interval);
     group.add(&repeat);
     group.add(&shuffle);
+    group.add(&stretch);
     group
 }
 

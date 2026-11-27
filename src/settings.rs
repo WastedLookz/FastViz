@@ -49,6 +49,8 @@ pub struct Settings {
     pub slideshow_interval: f64,
     pub slideshow_loop: bool,
     pub slideshow_shuffle: bool,
+    /// Slideshows scale photos smaller than the screen up to fill it.
+    pub slideshow_stretch: bool,
     /// Unused since 2026-11-09 (the tree starts collapsed); kept so old files load.
     pub expanded: Vec<(String, String)>,
 }
@@ -79,6 +81,7 @@ impl Default for Settings {
             slideshow_interval: 4.0,
             slideshow_loop: true,
             slideshow_shuffle: false,
+            slideshow_stretch: false,
             expanded: Vec::new(),
         }
     }

@@ -259,6 +259,7 @@ impl Window {
             interval: settings.slideshow_interval.clamp(1.0, 60.0),
             repeat: settings.slideshow_loop,
             shuffle: settings.slideshow_shuffle,
+            stretch: settings.slideshow_stretch,
         };
         let viewer = Viewer::new(
             settings.viewer_black,
@@ -1458,6 +1459,7 @@ impl Window {
             slideshow_interval: self.slideshow.get().interval,
             slideshow_loop: self.slideshow.get().repeat,
             slideshow_shuffle: self.slideshow.get().shuffle,
+            slideshow_stretch: self.slideshow.get().stretch,
             // The tree starts collapsed down to the start folder each time.
             expanded: Vec::new(),
         }

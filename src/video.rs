@@ -1,6 +1,7 @@
 //! Video thumbnails and metadata via FFmpeg: one frame from about 10% in.
 //! Colors follow the clip's YUV matrix like mpv's playback, and HDR (PQ or
-//! HLG) frames are tone-mapped to SDR.
+//! HLG) frames are tone-mapped to SDR. `details` lists everything about a
+//! file for the fullscreen metadata panel.
 
 use std::path::Path;
 use std::sync::Once;
@@ -16,6 +17,9 @@ use image::{DynamicImage, RgbImage};
 
 use crate::decode::{Pixels, Thumbnail};
 use crate::media::Meta;
+
+mod details;
+pub use details::{Section, details};
 
 /// Packets to read looking for a decodable frame before giving up.
 const MAX_PACKETS: usize = 600;
